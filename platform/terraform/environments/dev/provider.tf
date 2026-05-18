@@ -27,7 +27,7 @@ terraform {
     }
   }
   backend "s3" {
-    bucket         = "aiops-platform-terraform-state"
+    bucket         = "aiops-platform-terraform-state-239013465815"
     key            = "dev/terraform.tfstate"
     region         = "us-west-2"
     encrypt        = true
@@ -48,31 +48,27 @@ provider "aws" {
   }
 }
 
-data "aws_eks_cluster" "main" {
-  name = var.cluster_name
-}
-
 data "aws_eks_cluster_auth" "main" {
-  name = var.cluster_name
+  name = module.eks.cluster_name
 }
 
 provider "kubernetes" {
-  host                   = data.aws_eks_cluster.main.endpoint
-  cluster_ca_certificate = base64decode(data.aws_eks_cluster.main.certificate_authority[0].data)
+  host                   = module.eks.cluster_endpoint
+  cluster_ca_certificate = base64decode(module.eks.cluster_ca_certificate)
   token                  = data.aws_eks_cluster_auth.main.token
 }
 
 provider "helm" {
   kubernetes {
-    host                   = data.aws_eks_cluster.main.endpoint
-    cluster_ca_certificate = base64decode(data.aws_eks_cluster.main.certificate_authority[0].data)
+    host                   = module.eks.cluster_endpoint
+    cluster_ca_certificate = base64decode(module.eks.cluster_ca_certificate)
     token                  = data.aws_eks_cluster_auth.main.token
   }
 }
 
 provider "kubectl" {
-  host                   = data.aws_eks_cluster.main.endpoint
-  cluster_ca_certificate = base64decode(data.aws_eks_cluster.main.certificate_authority[0].data)
+  host                   = module.eks.cluster_endpoint
+  cluster_ca_certificate = base64decode(module.eks.cluster_ca_certificate)
   token                  = data.aws_eks_cluster_auth.main.token
   load_config_file       = false
 }

@@ -233,13 +233,18 @@ data "tls_certificate" "cluster" {
 # ---------------------------------------------------------------------------
 # Cluster Security Group Rules
 # ---------------------------------------------------------------------------
+data "aws_subnet" "intra" {
+  count = length(var.intra_subnet_ids)
+  id    = var.intra_subnet_ids[count.index]
+}
+
 resource "aws_security_group_rule" "cluster_inbound_private_subnets" {
   description       = "Allow private subnets to reach cluster API"
   type              = "ingress"
   from_port         = 443
   to_port           = 443
   protocol          = "tcp"
-  cidr_blocks       = var.private_subnet_ids[*]
+  cidr_blocks       = data.aws_subnet.private[*].cidr_block
   security_group_id = var.cluster_security_group_id
 }
 
@@ -250,7 +255,7 @@ resource "aws_security_group_rule" "cluster_inbound_intra_subnets" {
   from_port         = 443
   to_port           = 443
   protocol          = "tcp"
-  cidr_blocks       = var.intra_subnet_ids[*]
+  cidr_blocks       = data.aws_subnet.intra[*].cidr_block
   security_group_id = var.cluster_security_group_id
 }
 

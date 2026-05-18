@@ -536,7 +536,7 @@ resource "aws_security_group" "node" {
   ingress {
     description     = "Node-to-node communication"
     from_port       = 0
-    to_port         = 65535
+    to_port         = 0
     protocol        = "-1"
     self            = true
   }
@@ -544,7 +544,7 @@ resource "aws_security_group" "node" {
   ingress {
     description     = "Cluster control plane to node"
     from_port       = 0
-    to_port         = 65535
+    to_port         = 0
     protocol        = "-1"
     security_groups = [aws_security_group.cluster.id]
   }

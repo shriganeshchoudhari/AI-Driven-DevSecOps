@@ -53,8 +53,9 @@ resource "aws_db_parameter_group" "main" {
   }
 
   parameter {
-    name  = "shared_preload_libraries"
-    value = "pg_stat_statements,auto_explain"
+    name         = "shared_preload_libraries"
+    value        = "pg_stat_statements,auto_explain"
+    apply_method = "pending-reboot"
   }
 
   parameter {

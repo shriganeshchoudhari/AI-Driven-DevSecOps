@@ -9,7 +9,7 @@ locals {
 # Terraform State Bucket
 # ---------------------------------------------------------------------------
 resource "aws_s3_bucket" "terraform_state" {
-  bucket        = "${var.project_name}-terraform-state"
+  bucket        = "${var.project_name}-terraform-state-${var.aws_account_id}"
   force_destroy = false
 
   tags = merge(var.tags, {

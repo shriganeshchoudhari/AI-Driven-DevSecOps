@@ -37,10 +37,6 @@ resource "aws_iam_role_policy_attachment" "eks_vpc_resource_controller" {
   policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/AmazonEKSVPCResourceController"
 }
 
-resource "aws_iam_role_policy_attachment" "eks_cluster_service_role" {
-  role       = aws_iam_role.eks_cluster.name
-  policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/AmazonEKSServiceRolePolicy"
-}
 
 # ---------------------------------------------------------------------------
 # EKS Node Role

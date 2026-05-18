@@ -49,6 +49,11 @@ resource "aws_eks_cluster" "main" {
     ip_family         = "ipv4"
   }
 
+  access_config {
+    authentication_mode                         = "API_AND_CONFIG_MAP"
+    bootstrap_cluster_creator_admin_permissions = true
+  }
+
   tags = merge(var.tags, {
     Name        = var.cluster_name
     Environment = var.environment
@@ -71,7 +76,7 @@ resource "aws_eks_node_group" "main" {
   subnet_ids      = var.private_subnet_ids
 
   instance_types = var.node_group_instance_types
-  disk_size      = var.node_group_disk_size
+  ami_type       = "AL2_x86_64"
 
   scaling_config {
     desired_size = var.node_group_desired_size
@@ -116,6 +121,19 @@ resource "aws_eks_node_group" "main" {
 resource "aws_launch_template" "node" {
   name_prefix   = "${var.cluster_name}-node-lt-"
   description   = "Launch template for EKS managed node group"
+  user_data = base64encode(<<-EOF
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="==MYBOUNDARY=="
+
+--==MYBOUNDARY==
+Content-Type: text/x-shellscript; charset="us-ascii"
+
+#!/bin/bash
+/etc/eks/bootstrap.sh ${var.cluster_name} --kubelet-extra-args "--max-pods=50"
+
+--==MYBOUNDARY==--
+EOF
+  )
 
   block_device_mappings {
     device_name = "/dev/xvda"
@@ -238,27 +256,6 @@ data "aws_subnet" "intra" {
   id    = var.intra_subnet_ids[count.index]
 }
 
-resource "aws_security_group_rule" "cluster_inbound_private_subnets" {
-  description       = "Allow private subnets to reach cluster API"
-  type              = "ingress"
-  from_port         = 443
-  to_port           = 443
-  protocol          = "tcp"
-  cidr_blocks       = data.aws_subnet.private[*].cidr_block
-  security_group_id = var.cluster_security_group_id
-}
-
-resource "aws_security_group_rule" "cluster_inbound_intra_subnets" {
-  count             = length(var.intra_subnet_ids) > 0 ? 1 : 0
-  description       = "Allow intra subnets to reach cluster API"
-  type              = "ingress"
-  from_port         = 443
-  to_port           = 443
-  protocol          = "tcp"
-  cidr_blocks       = data.aws_subnet.intra[*].cidr_block
-  security_group_id = var.cluster_security_group_id
-}
-
 resource "aws_security_group_rule" "cluster_outbound_to_nodes" {
   description              = "Allow cluster to communicate with nodes"
   type                     = "egress"
@@ -275,7 +272,6 @@ resource "aws_security_group_rule" "cluster_outbound_to_nodes" {
 resource "aws_eks_access_entry" "admin" {
   cluster_name      = aws_eks_cluster.main.name
   principal_arn     = "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:root"
-  kubernetes_groups = ["system:masters"]
   type              = "STANDARD"
 
   tags = var.tags

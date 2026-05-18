@@ -8,7 +8,7 @@ metadata:
 spec:
   project: platform
   source:
-    repoURL: https://github.com/org/aiops-platform-gitops
+    repoURL: https://github.com/shriganeshchoudhari/AI-Driven-DevSecOps.git
     targetRevision: HEAD
     path: argocd/app-of-apps
     directory:

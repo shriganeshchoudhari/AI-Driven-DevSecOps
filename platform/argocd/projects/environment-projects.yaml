@@ -6,7 +6,7 @@ metadata:
 spec:
   description: Development environment
   sourceRepos:
-    - 'https://github.com/org/aiops-platform-gitops'
+    - 'https://github.com/shriganeshchoudhari/AI-Driven-DevSecOps.git'
     - 'https://charts.bitnami.com/bitnami'
   destinations:
     - namespace: '*'
@@ -36,7 +36,7 @@ metadata:
 spec:
   description: Staging environment
   sourceRepos:
-    - 'https://github.com/org/aiops-platform-gitops'
+    - 'https://github.com/shriganeshchoudhari/AI-Driven-DevSecOps.git'
     - 'https://charts.bitnami.com/bitnami'
   destinations:
     - namespace: '*'
@@ -65,7 +65,7 @@ metadata:
 spec:
   description: Production environment
   sourceRepos:
-    - 'https://github.com/org/aiops-platform-gitops'
+    - 'https://github.com/shriganeshchoudhari/AI-Driven-DevSecOps.git'
   destinations:
     - namespace: '*'
       server: https://kubernetes.default.svc

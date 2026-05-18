@@ -150,8 +150,6 @@ resource "aws_db_instance" "main" {
   allocated_storage     = var.allocated_storage
   max_allocated_storage = var.allocated_storage * 2
   storage_type          = "gp3"
-  iops                  = 3000
-  storage_throughput    = 125
   storage_encrypted     = true
   kms_key_id            = var.kms_key_arn
 

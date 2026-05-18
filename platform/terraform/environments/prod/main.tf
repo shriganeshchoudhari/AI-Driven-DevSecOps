@@ -151,8 +151,8 @@ module "rds" {
   master_password     = var.rds_password != "" ? var.rds_password : random_password.rds_master.result
 
   kms_key_arn         = module.kms.rds_kms_key_arn
-  multi_az            = true
-  backup_retention_days = 35
+  multi_az            = false
+  backup_retention_days = 1
   deletion_protection = true
   performance_insights_enabled = true
   monitoring_interval = 10

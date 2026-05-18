@@ -6,7 +6,7 @@ metadata:
 spec:
   description: Platform infrastructure components
   sourceRepos:
-    - 'https://github.com/org/aiops-platform-gitops'
+    - 'https://github.com/shriganeshchoudhari/AI-Driven-DevSecOps.git'
     - 'https://charts.bitnami.com/bitnami'
     - 'https://prometheus-community.github.io/helm-charts'
     - 'https://grafana.github.io/helm-charts'

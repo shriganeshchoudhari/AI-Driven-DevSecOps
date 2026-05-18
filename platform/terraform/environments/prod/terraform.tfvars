@@ -10,17 +10,17 @@ database_subnets    = ["10.64.192.0/24", "10.64.193.0/24", "10.64.194.0/24"]
 intra_subnets       = ["10.64.224.0/24", "10.64.225.0/24", "10.64.226.0/24"]
 
 cluster_name               = "aiops-platform-prod"
-cluster_version            = "1.28"
-cluster_endpoint_public_access  = false
+cluster_version            = "1.30"
+cluster_endpoint_public_access  = true
 cluster_endpoint_private_access = true
 
-node_group_instance_types = ["m6i.xlarge", "m6a.xlarge", "c6i.xlarge"]
-node_group_desired_size   = 3
-node_group_min_size       = 3
-node_group_max_size       = 15
-node_group_disk_size      = 100
+node_group_instance_types = ["t3.micro"]
+node_group_desired_size   = 6
+node_group_min_size       = 1
+node_group_max_size       = 8
+node_group_disk_size      = 20
 
-enable_karpenter                 = true
+enable_karpenter                 = false
 karpenter_instance_families      = ["m6i", "m6a", "c6i", "c6a", "r6i", "r6a"]
 
 enable_aws_load_balancer_controller = true
@@ -33,16 +33,16 @@ enable_efs_csi_driver               = false
 
 ebs_encryption_enabled = true
 
-rds_instance_class     = "db.r6g.xlarge"
-rds_allocated_storage  = 200
+rds_instance_class     = "db.t3.micro"
+rds_allocated_storage  = 20
 rds_engine             = "postgres"
-rds_engine_version     = "15.3"
+rds_engine_version     = "15"
 rds_database_name      = "aiopsplatform"
 rds_username           = "aiops_admin"
 rds_password           = ""
 
-elasticache_node_type         = "cache.r6g.large"
-elasticache_num_cache_nodes   = 3
+elasticache_node_type         = "cache.t3.micro"
+elasticache_num_cache_nodes   = 2
 elasticache_engine_version    = "7.0"
 
 enable_cloudwatch_logging  = true

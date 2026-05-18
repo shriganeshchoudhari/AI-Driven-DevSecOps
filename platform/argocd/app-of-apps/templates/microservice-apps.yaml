@@ -35,7 +35,7 @@ spec:
     spec:
       project: '{{environment}}'
       source:
-        repoURL: https://github.com/org/aiops-platform-gitops
+        repoURL: https://github.com/shriganeshchoudhari/AI-Driven-DevSecOps.git
         targetRevision: '{{targetRevision}}'
         path: 'helm-charts/{{name}}'
         helm:

@@ -497,22 +497,6 @@ resource "aws_security_group" "cluster" {
   description = "Security group for EKS cluster"
   vpc_id      = aws_vpc.main.id
 
-  ingress {
-    description = "Kubernetes API server from VPC"
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = [var.vpc_cidr]
-  }
-
-  ingress {
-    description = "Kubernetes API server from private subnets"
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = var.private_subnets
-  }
-
   egress {
     description = "All outbound"
     from_port   = 0

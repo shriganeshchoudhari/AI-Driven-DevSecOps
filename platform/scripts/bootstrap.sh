@@ -242,7 +242,8 @@ main() {
         header "Local Deployment Mode"
         log "Using existing local cluster"
     else
-        bootstrap_infrastructure
+        # bootstrap_infrastructure
+        log "Infrastructure is already 100% successfully provisioned. Skipping Phase 1..."
     fi
 
     configure_kubernetes

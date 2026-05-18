@@ -10,7 +10,7 @@ spec:
   source:
     repoURL: https://github.com/shriganeshchoudhari/AI-Driven-DevSecOps.git
     targetRevision: HEAD
-    path: argocd/app-of-apps
+    path: platform/argocd/app-of-apps
     directory:
       recurse: true
   destination:

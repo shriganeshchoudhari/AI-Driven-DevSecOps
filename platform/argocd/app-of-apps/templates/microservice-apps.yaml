@@ -37,7 +37,7 @@ spec:
       source:
         repoURL: https://github.com/shriganeshchoudhari/AI-Driven-DevSecOps.git
         targetRevision: '{{targetRevision}}'
-        path: 'helm-charts/{{name}}'
+        path: 'platform/helm-charts/{{name}}'
         helm:
           valueFiles:
             - values.yaml

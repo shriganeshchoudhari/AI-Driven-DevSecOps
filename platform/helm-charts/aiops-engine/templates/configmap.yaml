@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aiops-engine-config
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "aiops-engine.labels" . | nindent 4 }}
+data:
+  {{- range $key, $value := .Values.env }}
+  {{ $key }}: {{ $value | quote }}
+  {{- end }}
+  NODE_NAME: {{ include "aiops-engine.fullname" . | quote }}

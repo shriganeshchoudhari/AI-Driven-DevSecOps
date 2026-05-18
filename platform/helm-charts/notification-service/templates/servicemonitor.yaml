@@ -1,0 +1,52 @@
+{{- if and .Values.monitoring.enabled .Values.monitoring.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "notification-service.fullname" . }}
+  namespace: {{ .Values.monitoring.serviceMonitor.namespace | default .Release.Namespace | quote }}
+  labels:
+    {{- include "notification-service.labels" . | nindent 4 }}
+    release: prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      {{- include "notification-service.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: {{ .Values.service.name }}
+      interval: {{ .Values.monitoring.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.monitoring.serviceMonitor.scrapeTimeout }}
+      honorLabels: {{ .Values.monitoring.serviceMonitor.honorLabels }}
+      honorTimestamps: {{ .Values.monitoring.serviceMonitor.honorTimestamps }}
+      path: /metrics
+      scheme: http
+      {{- with .Values.monitoring.serviceMonitor.relabelings }}
+      relabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.monitoring.serviceMonitor.metricRelabelings }}
+      metricRelabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  targetLabels:
+    {{- toYaml .Values.monitoring.serviceMonitor.targetLabels | nindent 4 }}
+{{- end }}
+{{- if and .Values.monitoring.enabled .Values.monitoring.prometheusRules.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "notification-service.fullname" . }}
+  namespace: {{ .Values.monitoring.prometheusRules.namespace | default .Release.Namespace | quote }}
+  labels:
+    {{- include "notification-service.labels" . | nindent 4 }}
+    release: prometheus-stack
+spec:
+  groups:
+    - name: {{ include "notification-service.fullname" . }}
+      interval: 30s
+      rules:
+        {{- toYaml .Values.monitoring.prometheusRules.rules | nindent 8 }}
+{{- end }}

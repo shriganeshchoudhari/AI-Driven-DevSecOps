@@ -1,0 +1,25 @@
+# Value overrides for frontend-service in prod
+replicaCount: 3
+
+image:
+  tag: 1.0.0
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 512Mi
+  limits:
+    cpu: "1500m"
+    memory: "1536Mi"
+
+ingress:
+  enabled: true
+  hosts:
+    - host: frontend.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+
+global:
+  labels:
+    app.kubernetes.io/environment: prod

@@ -1,0 +1,66 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.4",
+  "serialNumber": "urn:uuid:3e075636-bceb-4dfd-82d0-cd173df5618b",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-05-18T09:48:14Z",
+    "tools": [
+      {
+        "vendor": "Anchore",
+        "name": "syft",
+        "version": "0.84.1"
+      }
+    ],
+    "component": {
+      "bom-ref": "aiops-platform@1.0.0",
+      "type": "application",
+      "name": "aiops-platform",
+      "version": "1.0.0"
+    }
+  },
+  "components": [
+    {
+      "bom-ref": "pkg:pypi/fastapi@0.100.0",
+      "type": "library",
+      "name": "fastapi",
+      "version": "0.100.0",
+      "description": "FastAPI framework, high performance, easy to learn, fast to code, ready for production",
+      "purl": "pkg:pypi/fastapi@0.100.0",
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://fastapi.tiangolo.com/"
+        }
+      ]
+    },
+    {
+      "bom-ref": "pkg:pypi/langchain@0.0.250",
+      "type": "library",
+      "name": "langchain",
+      "version": "0.0.250",
+      "description": "Building applications with LLMs through composability",
+      "purl": "pkg:pypi/langchain@0.0.250",
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/langchain-ai/langchain"
+        }
+      ]
+    },
+    {
+      "bom-ref": "pkg:pypi/pydantic@2.1.1",
+      "type": "library",
+      "name": "pydantic",
+      "version": "2.1.1",
+      "purl": "pkg:pypi/pydantic@2.1.1"
+    },
+    {
+      "bom-ref": "pkg:pypi/uvicorn@0.22.0",
+      "type": "library",
+      "name": "uvicorn",
+      "version": "0.22.0",
+      "purl": "pkg:pypi/uvicorn@0.22.0"
+    }
+  ]
+}

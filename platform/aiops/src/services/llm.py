@@ -20,12 +20,6 @@ class LLMService:
         self.llm = None
         self._initialize_llm()
 
-        def _load_prompt(self, filename: str) -> str:
-            base = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "prompts"))
-            path = os.path.join(base, filename)
-            with open(path, "r", encoding="utf-8") as f:
-                return f.read()
-
         self.rca_prompt = PromptTemplate(
             input_variables=[
                 "incident_title",
@@ -39,30 +33,19 @@ class LLMService:
 
         self.summary_prompt = PromptTemplate(
             input_variables=["incidents"],
-            template="""Summarize the following production incidents in a concise format suitable for an executive report.
-            
-Incidents: {incidents}
-
-Provide:
-1. Overall status summary (1 sentence)
-2. Key incidents requiring attention (max 3)
-3. Trends or patterns observed
-4. Recommended actions""",
+            template=self._load_prompt("summary_prompt.txt"),
         )
 
         self.threat_intel_prompt = PromptTemplate(
             input_variables=["alerts"],
-            template="""Analyze these security alerts and provide threat intelligence assessment:
-            
-Alerts: {alerts}
-
-Provide:
-1. Overall threat level assessment
-2. Most critical findings
-3. MITRE ATT&CK techniques observed
-4. Recommended containment actions
-5. Recommended remediation steps""",
+            template=self._load_prompt("threat_intel_prompt.txt"),
         )
+
+    def _load_prompt(self, filename: str) -> str:
+        base = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "prompts"))
+        path = os.path.join(base, filename)
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
 
     def _initialize_llm(self):
         if settings.LLM_PROVIDER == "openai" and settings.OPENAI_API_KEY:

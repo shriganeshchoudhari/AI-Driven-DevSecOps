@@ -3,7 +3,7 @@ replicaCount: 3
 
 # -- Image configuration
 image:
-  repository: 123456789.dkr.ecr.us-west-2.amazonaws.com/frontend-service
+  repository: 123456789.dkr.ecr.us-west-2.amazonaws.com/notification-service
   tag: latest
   pullPolicy: IfNotPresent
 
@@ -19,8 +19,8 @@ fullnameOverride: ""
 serviceAccount:
   create: true
   annotations:
-    eks.amazonaws.com/role-arn: arn:aws:iam::123456789:role/frontend-service-irsa
-  name: "frontend-service"
+    eks.amazonaws.com/role-arn: arn:aws:iam::123456789:role/notification-service-irsa
+  name: "notification-service"
 
 # -- Annotations to add to pods
 podAnnotations:
@@ -66,14 +66,14 @@ ingress:
     nginx.ingress.kubernetes.io/proxy-body-size: "10m"
     cert-manager.io/cluster-issuer: letsencrypt-prod
   hosts:
-    - host: frontend.example.com
+    - host: notification.example.com
       paths:
         - path: /
           pathType: Prefix
   tls:
-    - secretName: frontend-tls
+    - secretName: notification-tls
       hosts:
-        - frontend.example.com
+        - notification.example.com
 
 # -- Resource limits and requests
 resources:
@@ -119,9 +119,9 @@ env:
 # -- Environment from sources
 envFrom:
   - configMapRef:
-      name: frontend-service-config
+      name: notification-service-config
   - secretRef:
-      name: frontend-service-secrets
+      name: notification-service-secrets
 
 # -- Volumes
 volumes:
@@ -165,7 +165,7 @@ affinity:
               - key: app.kubernetes.io/name
                 operator: In
                 values:
-                  - frontend-service
+                  - notification-service
           topologyKey: topology.kubernetes.io/zone
       - weight: 50
         podAffinityTerm:
@@ -174,7 +174,7 @@ affinity:
               - key: app.kubernetes.io/name
                 operator: In
                 values:
-                  - frontend-service
+                  - notification-service
           topologyKey: kubernetes.io/hostname
   nodeAffinity:
     requiredDuringSchedulingIgnoredDuringExecution:
@@ -255,7 +255,7 @@ monitoring:
     namespace: monitoring
     rules:
       - alert: FrontendHighErrorRate
-        expr: rate(http_requests_total{service="frontend-service",status=~"5.."}[5m]) / rate(http_requests_total{service="frontend-service"}[5m]) > 0.01
+        expr: rate(http_requests_total{service="notification-service",status=~"5.."}[5m]) / rate(http_requests_total{service="notification-service"}[5m]) > 0.01
         for: 5m
         labels:
           severity: critical
@@ -263,7 +263,7 @@ monitoring:
           summary: "Frontend service error rate is high"
           description: "Frontend service error rate is {{ $value | humanizePercentage }} for the last 5 minutes"
       - alert: FrontendHighLatency
-        expr: histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{service="frontend-service"}[5m])) by (le)) > 1
+        expr: histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{service="notification-service"}[5m])) by (le)) > 1
         for: 5m
         labels:
           severity: warning

@@ -1,0 +1,9 @@
+Summarize the following production incidents in a concise format suitable for an executive report.
+            
+Incidents: {incidents}
+
+Provide:
+1. Overall status summary (1 sentence)
+2. Key incidents requiring attention (max 3)
+3. Trends or patterns observed
+4. Recommended actions

@@ -2,16 +2,16 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Rollout
 metadata:
-  name: {{ include "auth-service.fullname" . }}
+  name: {{ include "frontend-service.fullname" . }}
   namespace: {{ .Release.Namespace | quote }}
   labels:
-    {{- include "auth-service.labels" . | nindent 4 }}
+    {{- include "frontend-service.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
   revisionHistoryLimit: 3
   selector:
     matchLabels:
-      {{- include "auth-service.selectorLabels" . | nindent 6 }}
+      {{- include "frontend-service.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       {{- with .Values.podAnnotations }}
@@ -19,13 +19,13 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       labels:
-        {{- include "auth-service.selectorLabels" . | nindent 8 }}
+        {{- include "frontend-service.selectorLabels" . | nindent 8 }}
         {{- with .Values.global.labels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
-      {{- include "auth-service.imagePullSecrets" . | nindent 6 }}
-      serviceAccountName: {{ include "auth-service.serviceAccountName" . }}
+      {{- include "frontend-service.imagePullSecrets" . | nindent 6 }}
+      serviceAccountName: {{ include "frontend-service.serviceAccountName" . }}
       {{- with .Values.podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}
@@ -90,7 +90,7 @@ spec:
           - templateName: {{ .Values.rollout.analysis.templateName | default "prometheus-metrics" }}
         args:
           - name: service-name
-            value: {{ include "auth-service.fullname" . }}
+            value: {{ include "frontend-service.fullname" . }}
       steps:
         - setWeight: 10
         - pause: { duration: 1m }

@@ -1,0 +1,10 @@
+Analyze these security alerts and provide threat intelligence assessment:
+            
+Alerts: {alerts}
+
+Provide:
+1. Overall threat level assessment
+2. Most critical findings
+3. MITRE ATT&CK techniques observed
+4. Recommended containment actions
+5. Recommended remediation steps

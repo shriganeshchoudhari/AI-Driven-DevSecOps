@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "aiops-engine.fullname" . }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "aiops-engine.labels" . | nindent 4 }}
+  annotations:
+    {{- if .Values.serviceMesh.enabled }}
+    sidecar.istio.io/inject: {{ .Values.serviceMesh.sidecarInject | quote }}
+    {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: {{ .Values.service.targetPort }}
+      protocol: {{ .Values.service.protocol }}
+      name: {{ .Values.service.name }}
+  selector:
+    {{- include "aiops-engine.selectorLabels" . | nindent 4 }}

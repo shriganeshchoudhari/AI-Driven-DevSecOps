@@ -1,4 +1,4 @@
-# Value overrides for auth-service in dev
+# Value overrides for aiops-engine in dev
 replicaCount: 1
 
 image:
@@ -15,7 +15,7 @@ resources:
 ingress:
   enabled: true
   hosts:
-    - host: auth.dev.example.com
+    - host: aiops-engine.dev.example.com
       paths:
         - path: /
           pathType: Prefix

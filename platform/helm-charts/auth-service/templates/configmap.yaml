@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: auth-service-config
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "auth-service.labels" . | nindent 4 }}
+data:
+  {{- range $key, $value := .Values.env }}
+  {{ $key }}: {{ $value | quote }}
+  {{- end }}
+  NODE_NAME: {{ include "auth-service.fullname" . | quote }}

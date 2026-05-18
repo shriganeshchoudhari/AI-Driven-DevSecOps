@@ -166,7 +166,7 @@ class RemediationController:
             return {"status": "failed", "error": str(e)}
         return {"status": "unknown_action", "action": action}
 
-async def main():
+def main():
     from fastapi import FastAPI, Request
     import uvicorn
     app = FastAPI(title="Remediation Controller")
@@ -186,4 +186,4 @@ async def main():
     uvicorn.run(app, host="0.0.0.0", port=8080)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

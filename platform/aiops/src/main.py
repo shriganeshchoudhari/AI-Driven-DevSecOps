@@ -23,7 +23,7 @@ REMEDIATION_COUNT = Counter("aiops_remediation_actions_total", "Remediation acti
 RCA_DURATION = Histogram("aiops_rca_duration_seconds", "RCA generation duration", [])
 
 logging.basicConfig(
-    level=getattr(logging, settings.LOG_LEVEL),
+    level=getattr(logging, settings.LOG_LEVEL.upper()),
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
@@ -83,6 +83,16 @@ app.include_router(api_router, prefix="/api/v1")
 
 @app.get("/health", response_model=HealthResponse)
 async def health():
+    return HealthResponse(
+        status="healthy",
+        version=settings.VERSION,
+        environment=settings.ENVIRONMENT,
+        uptime=time.time() - settings.START_TIME,
+    )
+
+
+@app.get("/ready", response_model=HealthResponse)
+async def ready():
     return HealthResponse(
         status="healthy",
         version=settings.VERSION,

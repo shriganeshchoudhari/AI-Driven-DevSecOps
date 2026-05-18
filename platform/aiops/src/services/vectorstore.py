@@ -11,6 +11,11 @@ from src.config import settings
 logger = logging.getLogger(__name__)
 
 
+class DummyEmbeddingFunction:
+    def __call__(self, input: List[str]) -> List[List[float]]:
+        return [[0.0] * 384 for _ in input]
+
+
 class VectorStoreService:
     def __init__(self):
         self.client = None
@@ -26,19 +31,24 @@ class VectorStoreService:
             ),
         )
 
+        dummy_ef = DummyEmbeddingFunction()
+
         self.incident_collection = self.client.get_or_create_collection(
             name="aiops-incidents",
             metadata={"description": "Historical incidents for similarity search"},
+            embedding_function=dummy_ef
         )
 
         self.log_collection = self.client.get_or_create_collection(
             name="aiops-logs",
             metadata={"description": "Log event embeddings for context retrieval"},
+            embedding_function=dummy_ef
         )
 
         self.security_collection = self.client.get_or_create_collection(
             name="aiops-security",
             metadata={"description": "Security event embeddings"},
+            embedding_function=dummy_ef
         )
 
         logger.info(f"Vector store initialized at {settings.VECTOR_DB_PATH}")

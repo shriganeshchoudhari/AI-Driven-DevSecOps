@@ -2,6 +2,7 @@
 replicaCount: 1
 
 image:
+  repository: frontend-service
   tag: dev-latest
 
 resources:
@@ -20,6 +21,16 @@ ingress:
         - path: /
           pathType: Prefix
 
+env:
+  LOG_LEVEL: "INFO"
+
 global:
   labels:
     app.kubernetes.io/environment: dev
+
+monitoring:
+  enabled: false
+
+nodeSelector: {}
+affinity: {}
+tolerations: []

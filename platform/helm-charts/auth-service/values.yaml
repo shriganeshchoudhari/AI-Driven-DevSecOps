@@ -140,51 +140,13 @@ volumeMounts:
     mountPath: /var/cache
 
 # -- Node selector
-nodeSelector:
-  node-type: general-purpose
+nodeSelector: {}
 
 # -- Tolerations
-tolerations:
-  - key: "CriticalAddonsOnly"
-    operator: "Equal"
-    value: "true"
-    effect: "NoSchedule"
-  - key: "node.kubernetes.io/not-ready"
-    operator: "Exists"
-    effect: "NoExecute"
-    tolerationSeconds: 300
+tolerations: []
 
 # -- Affinity / anti-affinity
-affinity:
-  podAntiAffinity:
-    preferredDuringSchedulingIgnoredDuringExecution:
-      - weight: 100
-        podAffinityTerm:
-          labelSelector:
-            matchExpressions:
-              - key: app.kubernetes.io/name
-                operator: In
-                values:
-                  - auth-service
-          topologyKey: topology.kubernetes.io/zone
-      - weight: 50
-        podAffinityTerm:
-          labelSelector:
-            matchExpressions:
-              - key: app.kubernetes.io/name
-                operator: In
-                values:
-                  - auth-service
-          topologyKey: kubernetes.io/hostname
-  nodeAffinity:
-    requiredDuringSchedulingIgnoredDuringExecution:
-      nodeSelectorTerms:
-        - matchExpressions:
-            - key: node-type
-              operator: In
-              values:
-                - general-purpose
-                - compute-optimized
+affinity: {}
 
 # -- Probes configuration
 probes:
@@ -208,7 +170,7 @@ probes:
     successThreshold: 1
   startup:
     enabled: true
-    path: /startup
+    path: /health
     port: 8080
     initialDelaySeconds: 0
     periodSeconds: 10

@@ -14,7 +14,7 @@ from src.config import settings
 from src.models.notification import init_db
 from src.routes import health, notifications
 
-logging.basicConfig(level=getattr(logging, settings.LOG_LEVEL))
+logging.basicConfig(level=getattr(logging, settings.LOG_LEVEL.upper()))
 logger = logging.getLogger(__name__)
 
 resource = Resource.create({

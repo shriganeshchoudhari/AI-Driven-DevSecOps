@@ -2,6 +2,7 @@
 replicaCount: 1
 
 image:
+  repository: aiops-engine
   tag: dev-latest
 
 resources:
@@ -20,6 +21,17 @@ ingress:
         - path: /
           pathType: Prefix
 
+env:
+  LOG_LEVEL: "INFO"
+  VECTOR_DB_PATH: "/tmp/vectorstore"
+
 global:
   labels:
     app.kubernetes.io/environment: dev
+
+monitoring:
+  enabled: false
+
+nodeSelector: {}
+affinity: {}
+tolerations: []

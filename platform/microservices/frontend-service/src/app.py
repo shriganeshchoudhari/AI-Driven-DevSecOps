@@ -16,7 +16,7 @@ import httpx
 from src.config import settings
 from src.routes import health, api
 
-logging.basicConfig(level=getattr(logging, settings.LOG_LEVEL))
+logging.basicConfig(level=getattr(logging, settings.LOG_LEVEL.upper()))
 logger = logging.getLogger(__name__)
 
 resource = Resource.create({

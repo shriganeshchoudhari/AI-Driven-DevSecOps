@@ -15,8 +15,3 @@ sources:
 maintainers:
   - name: Platform Team
     email: platform@example.com
-dependencies:
-  - name: common
-    repository: https://charts.bitnami.com/bitnami
-    version: 2.x.x
-    condition: common.enabled

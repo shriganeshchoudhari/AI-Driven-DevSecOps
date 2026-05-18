@@ -2,6 +2,7 @@
 replicaCount: 1
 
 image:
+  repository: notification-service
   tag: dev-latest
 
 resources:
@@ -20,6 +21,17 @@ ingress:
         - path: /
           pathType: Prefix
 
+env:
+  DATABASE_URL: "sqlite:////tmp/notifications.db"
+  LOG_LEVEL: "INFO"
+
 global:
   labels:
     app.kubernetes.io/environment: dev
+
+monitoring:
+  enabled: false
+
+nodeSelector: {}
+affinity: {}
+tolerations: []

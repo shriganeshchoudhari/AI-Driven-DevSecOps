@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 from typing import Any, Dict, List, Optional
 
 from langchain.callbacks import get_openai_callback
@@ -19,6 +20,12 @@ class LLMService:
         self.llm = None
         self._initialize_llm()
 
+        def _load_prompt(self, filename: str) -> str:
+            base = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "prompts"))
+            path = os.path.join(base, filename)
+            with open(path, "r", encoding="utf-8") as f:
+                return f.read()
+
         self.rca_prompt = PromptTemplate(
             input_variables=[
                 "incident_title",
@@ -27,38 +34,7 @@ class LLMService:
                 "alerts",
                 "similar_incidents",
             ],
-            template="""You are a Senior SRE AI assistant performing Root Cause Analysis for a production incident.
-
-## Incident Details
-**Title:** {incident_title}
-**Description:** {incident_description}
-
-## Related Events
-{events}
-
-## Security Alerts
-{alerts}
-
-## Similar Historical Incidents
-{similar_incidents}
-
-## Instructions
-Perform a comprehensive RCA following these steps:
-1. Identify the most likely root cause
-2. List contributing factors
-3. Reconstruct the incident timeline
-4. Assess blast radius and affected services
-5. Recommend remediation steps
-6. Suggest preventive measures
-
-Format your response as a JSON object with fields:
-- root_cause: string (2-3 sentences)
-- confidence: float (0-1)
-- contributing_factors: string[]
-- timeline: [{{"time": "relative time", "event": "description"}}]
-- affected_services: string[]
-- recommendations: string[]
-- preventive_measures: string[]""",
+            template=self._load_prompt("rca_prompt.txt"),
         )
 
         self.summary_prompt = PromptTemplate(

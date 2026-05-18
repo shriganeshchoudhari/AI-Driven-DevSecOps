@@ -1,0 +1,33 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: enforce-image-signatures
+  namespace: kyverno
+  annotations:
+    policies.kyverno.io/title: "Enforce Cosign Signed Images"
+    policies.kyverno.io/category: "Software Supply Chain Security"
+    policies.kyverno.io/severity: "medium"
+    description: "Verify that all container images are signed by GitHub Actions OIDC"
+spec:
+  validationFailureAction: Enforce
+  background: false
+  rules:
+    - name: verify-signatures
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+      exclude:
+        resources:
+          namespaces: [kube-system, kyverno, argocd, monitoring]
+      verifyImages:
+        - imageReferences:
+            - "123456789012.dkr.ecr.us-west-2.amazonaws.com/microservices/*"
+          attestations:
+            - predicateType: cosign.sigstore.dev/attestation/v1
+              entries:
+                - keyless:
+                    issuer: "https://token.actions.githubusercontent.com"
+                    subject: "https://github.com/shriganeshchoudhari/AI-Driven-DevSecOps/.github/workflows/01-ci-build.yml@refs/heads/main"
+                  rekor:
+                    url: "https://rekor.sigstore.dev"

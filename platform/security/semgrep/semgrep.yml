@@ -1,0 +1,13 @@
+rules:
+  - id: hardcoded-aws-secret
+    patterns:
+      - pattern-regex: '(AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16})'
+    message: "Avoid hard‑coded AWS secret keys"
+    severity: ERROR
+    languages: [python, yaml, go, terraform]
+  - id: exec-shell-injection
+    patterns:
+      - pattern: "os.system($X)"
+    message: "Potential command injection – use subprocess with explicit arguments"
+    severity: WARNING
+    languages: [python]

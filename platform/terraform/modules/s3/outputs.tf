@@ -20,12 +20,12 @@ output "backup_bucket_arn" {
 
 output "flow_logs_bucket_id" {
   description = "ID of the VPC flow logs S3 bucket"
-  value       = aws_s3_bucket.flow_logs.id
+  value       = try(aws_s3_bucket.flow_logs[0].id, null)
 }
 
 output "flow_logs_bucket_arn" {
   description = "ARN of the VPC flow logs S3 bucket"
-  value       = aws_s3_bucket.flow_logs.arn
+  value       = try(aws_s3_bucket.flow_logs[0].arn, null)
 }
 
 output "container_cache_bucket_id" {

@@ -183,7 +183,32 @@ def main():
     async def health():
         return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
 
-    uvicorn.run(app, host="0.0.0.0", port=8080)
+    import socket
+    port = int(os.getenv("PORT", 8080))
+    
+    # Socket pre-check to detect occupied or forbidden port
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind(("0.0.0.0", port))
+        s.close()
+    except Exception as e:
+        logger.warning(f"Port {port} is occupied or forbidden: {e}. Searching for an available fallback port...")
+        s.close()
+        for fallback_port in range(port + 1, port + 15):
+            s_fallback = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                s_fallback.bind(("0.0.0.0", fallback_port))
+                s_fallback.close()
+                port = fallback_port
+                logger.info(f"Selected fallback port {port} successfully.")
+                break
+            except Exception:
+                s_fallback.close()
+                continue
+        else:
+            logger.error("Could not find any free ports in the fallback range. Attempting default port binding anyway.")
+
+    uvicorn.run(app, host="0.0.0.0", port=port)
 
 if __name__ == "__main__":
     main()

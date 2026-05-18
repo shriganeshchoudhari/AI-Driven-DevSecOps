@@ -1,5 +1,12 @@
-data "aws_partition" "current" {}
-data "aws_caller_identity" "current" {}
+terraform {
+  required_providers {
+    kubectl = {
+      source  = "gavinbunney/kubectl"
+      version = ">= 1.14"
+    }
+  }
+}
+
 data "aws_region" "current" {}
 
 locals {

@@ -1,4 +1,3 @@
-data "aws_partition" "current" {}
 
 # ---------------------------------------------------------------------------
 # Karpenter Kubernetes Namespace
@@ -19,6 +18,14 @@ resource "kubernetes_namespace" "karpenter" {
   }
 
   depends_on = [aws_eks_cluster.main]
+}
+
+# ---------------------------------------------------------------------------
+# AWS Subnet Data Source to Resolve Availability Zones
+# ---------------------------------------------------------------------------
+data "aws_subnet" "private" {
+  count = length(var.private_subnet_ids)
+  id    = var.private_subnet_ids[count.index]
 }
 
 # ---------------------------------------------------------------------------
@@ -45,11 +52,13 @@ spec:
           values: ["on-demand", "spot"]
         - key: "node.kubernetes.io/instance-type"
           operator: In
-          values: ${jsonencode([for f in var.karpenter_instance_families : "${f}.xlarge", "${f}.2xlarge", "${f}.4xlarge"])}
+          values: ${jsonencode(flatten([for f in var.karpenter_instance_families : ["${f}.xlarge", "${f}.2xlarge", "${f}.4xlarge"]]))}
         - key: "topology.kubernetes.io/zone"
           operator: In
-          values: ${jsonencode(var.private_subnet_ids)}
+          values: ${jsonencode(distinct(data.aws_subnet.private[*].availability_zone))}
       nodeClassRef:
+        group: karpenter.k8s.aws
+        kind: EC2NodeClass
         name: default
   disruption:
     consolidationPolicy: WhenUnderutilized
@@ -126,10 +135,10 @@ spec:
       values: ["on-demand", "spot"]
     - key: "node.kubernetes.io/instance-type"
       operator: In
-      values: ${jsonencode([for f in var.karpenter_instance_families : "${f}.large", "${f}.xlarge", "${f}.2xlarge", "${f}.4xlarge"])}
+      values: ${jsonencode(flatten([for f in var.karpenter_instance_families : ["${f}.large", "${f}.xlarge", "${f}.2xlarge", "${f}.4xlarge"]]))}
     - key: "topology.kubernetes.io/zone"
       operator: In
-      values: ${jsonencode(var.private_subnet_ids)}
+      values: ${jsonencode(distinct(data.aws_subnet.private[*].availability_zone))}
   limits:
     resources:
       cpu: 1000
@@ -183,4 +192,4 @@ YAML
   depends_on = [aws_eks_cluster.main, kubernetes_namespace.karpenter]
 }
 
-data "aws_caller_identity" "current" {}
+

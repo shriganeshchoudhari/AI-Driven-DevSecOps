@@ -188,9 +188,7 @@ resource "aws_db_instance" "main" {
     Environment = var.environment
   })
 
-  lifecycle {
-    prevent_destroy = var.deletion_protection
-  }
+
 }
 
 # ---------------------------------------------------------------------------

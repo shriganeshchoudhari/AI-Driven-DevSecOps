@@ -91,9 +91,9 @@ output "cluster_primary_security_group_id" {
 output "cluster_addons" {
   description = "Map of cluster addon versions"
   value = {
-    vpc_cni     = aws_eks_addon.vpc_cni[0].addon_version
-    coredns     = aws_eks_addon.coredns[0].addon_version
-    kube_proxy  = aws_eks_addon.kube_proxy[0].addon_version
+    vpc_cni     = aws_eks_addon.vpc_cni.addon_version
+    coredns     = aws_eks_addon.coredns.addon_version
+    kube_proxy  = aws_eks_addon.kube_proxy.addon_version
     ebs_csi     = try(aws_eks_addon.ebs_csi[0].addon_version, "")
   }
 }

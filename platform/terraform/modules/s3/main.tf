@@ -49,6 +49,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "terraform_state" {
   rule {
     id     = "expire-noncurrent-versions"
     status = "Enabled"
+    filter {}
     noncurrent_version_expiration {
       noncurrent_days = 90
     }
@@ -127,6 +128,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "backup" {
   rule {
     id     = "transition-to-glacier"
     status = "Enabled"
+    filter {}
     transition {
       days          = var.backup_retention_days
       storage_class = "GLACIER_IR"
@@ -235,6 +237,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "flow_logs" {
   rule {
     id     = "expire-flow-logs"
     status = "Enabled"
+    filter {}
     expiration {
       days = 365
     }
@@ -288,6 +291,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "container_cache" {
   rule {
     id     = "expire-old-cache"
     status = "Enabled"
+    filter {}
     expiration {
       days = 14
     }
@@ -341,6 +345,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "log_archive" {
   rule {
     id     = "transition-logs"
     status = "Enabled"
+    filter {}
     transition {
       days          = 30
       storage_class = "STANDARD_IA"

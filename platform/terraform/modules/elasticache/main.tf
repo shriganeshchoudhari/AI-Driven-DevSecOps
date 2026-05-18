@@ -137,7 +137,7 @@ resource "aws_security_group" "elasticache" {
 # ---------------------------------------------------------------------------
 resource "aws_elasticache_replication_group" "main" {
   replication_group_id          = "${var.project_name}-${var.environment}-redis"
-  replication_group_description = "ElastiCache Redis for ${var.project_name}-${var.environment}"
+  description                   = "ElastiCache Redis for ${var.project_name}-${var.environment}"
 
   node_type            = var.node_type
   num_cache_clusters   = var.automatic_failover ? var.num_cache_nodes : 1
@@ -152,7 +152,6 @@ resource "aws_elasticache_replication_group" "main" {
 
   automatic_failover_enabled = var.automatic_failover
   multi_az_enabled           = var.automatic_failover && var.num_cache_nodes >= 2
-  cluster_mode_enabled       = var.cluster_mode_enabled
 
   at_rest_encryption_enabled = true
   kms_key_id                 = var.kms_key_arn

@@ -128,7 +128,7 @@ echo ""
 init_report
 
 echo "--- Kubernetes Validation ---"
-assert "All nodes Ready" "Ready" kubectl get nodes -o jsonpath='{.items[*].status.conditions[?(@.type=="Ready")].status}'
+assert_not "No Unready nodes" "False" kubectl get nodes -o jsonpath='{.items[*].status.conditions[?(@.type=="Ready")].status}'
 assert "CoreDNS running" "Running" kubectl get pods -n kube-system -l k8s-app=kube-dns -o jsonpath='{.items[*].status.phase}'
 assert_not "No failing system pods" "" kubectl get pods -n kube-system --field-selector=status.phase!=Running,status.phase!=Succeeded -o name 2>/dev/null
 

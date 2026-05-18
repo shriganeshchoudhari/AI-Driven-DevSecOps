@@ -1,0 +1,1131 @@
+---
+# =============================================================================
+# KYVERNO CLUSTER POLICIES - Enterprise Security Controls
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 1. require-pod-security-restricted
+# Enforces restricted Pod Security Standards on all namespaces except system
+# -----------------------------------------------------------------------------
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-pod-security-restricted
+  annotations:
+    policies.kyverno.io/title: Require Pod Security Restricted
+    policies.kyverno.io/category: Pod Security Standards
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Enforces the restricted Pod Security Standard on all pods across the cluster,
+      excluding system and infrastructure namespaces. This is the most stringent
+      PSS profile, disallowing privileged escalation, host namespaces, and
+      requiring non-root users and read-only root filesystems.
+    policies.kyverno.io/minversion: "1.8.0"
+    cyber-secure: "true"
+spec:
+  validationFailureAction: Enforce
+  background: true
+  failurePolicy: Fail
+  rules:
+    - name: check-privileged
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - kube-public
+                - monitoring
+                - ingress-nginx
+                - falco
+                - kyverno
+                - chaos-engineering
+      validate:
+        message: "Pods must not run with privileged containers. Use securityContext.privileged: false."
+        pattern:
+          spec:
+            containers:
+              - securityContext:
+                  privileged: false
+            =(ephemeralContainers):
+              - securityContext:
+                  privileged: false
+            =(initContainers):
+              - securityContext:
+                  privileged: false
+    - name: check-capabilities
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - kube-public
+                - monitoring
+                - ingress-nginx
+                - falco
+                - kyverno
+                - chaos-engineering
+      validate:
+        message: "Pods must not add CAP_SYS_ADMIN or other dangerous capabilities. Drop all capabilities and only add those in the allowed list."
+        pattern:
+          spec:
+            containers:
+              - securityContext:
+                  capabilities:
+                    drop:
+                      - ALL
+                    =(add):
+                      - NET_BIND_SERVICE
+            =(initContainers):
+              - securityContext:
+                  capabilities:
+                    drop:
+                      - ALL
+    - name: check-host-namespaces
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - kube-public
+                - monitoring
+                - ingress-nginx
+                - falco
+                - kyverno
+                - chaos-engineering
+      validate:
+        message: "Pods must not share host namespaces. Set hostPID, hostIPC, and hostNetwork to false."
+        pattern:
+          spec:
+            hostPID: false
+            hostIPC: false
+            hostNetwork: false
+---
+# -----------------------------------------------------------------------------
+# 2. require-image-signature
+# Requires all container images to be signed with Cosign
+# -----------------------------------------------------------------------------
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-image-signature
+  annotations:
+    policies.kyverno.io/title: Require Image Signature
+    policies.kyverno.io/category: Supply Chain Security
+    policies.kyverno.io/severity: critical
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Verifies that all container images have been signed using Cosign.
+      Images without valid signatures from the trusted key are rejected.
+      This prevents supply chain attacks by ensuring only approved images run.
+    policies.kyverno.io/minversion: "1.8.0"
+    cyber-secure: "true"
+spec:
+  validationFailureAction: Enforce
+  background: false
+  failurePolicy: Fail
+  webhookTimeoutSeconds: 30
+  rules:
+    - name: verify-image-signature
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - kube-public
+                - kyverno
+      verifyImages:
+        - imageReferences:
+            - "*"
+          attestors:
+            - entries:
+                - keys:
+                    publicKeys: |-
+                      -----BEGIN PUBLIC KEY-----
+                      MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEzq9L5sFy5J7yG7oJ8e8Yz3Jw
+                      v5w3xL0y9kG6Qz5n0Y7z1v2oX4pR6sT8aBcDfGhJkLmNpQrStUvWxYzA
+                      -----END PUBLIC KEY-----
+                    kms: ""
+          requiredCount: 1
+          validateSignature: true
+          repository: ""
+    - name: reject-unsigned-images
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - kube-public
+                - kyverno
+      validate:
+        message: "All images must be signed with Cosign. Image {{ images.name }} is not signed or signature is invalid."
+        deny:
+          conditions:
+            all:
+              - key: "{{ images.default[*].signed }}"
+                operator: AnyIn
+                value:
+                  - false
+---
+# -----------------------------------------------------------------------------
+# 3. block-registry-external
+# Blocks images from external/unapproved registries
+# -----------------------------------------------------------------------------
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: block-registry-external
+  annotations:
+    policies.kyverno.io/title: Block External Registries
+    policies.kyverno.io/category: Supply Chain Security
+    policies.kyverno.io/severity: critical
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Blocks container images from unapproved external registries.
+      Only allows images from the approved ECR registry and a curated
+      list of trusted public registries for base images.
+    policies.kyverno.io/minversion: "1.8.0"
+    cyber-secure: "true"
+spec:
+  validationFailureAction: Enforce
+  background: true
+  failurePolicy: Fail
+  rules:
+    - name: block-external-registries
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - kube-public
+                - monitoring
+                - ingress-nginx
+                - falco
+                - kyverno
+                - chaos-engineering
+      validate:
+        message: "Images must come from approved registries only: 123456789012.dkr.ecr.us-west-2.amazonaws.com, docker.io (curated only), gcr.io (curated only)"
+        foreach:
+          - list: "request.object.spec.containers"
+            context:
+              - name: imageRegistry
+                variable:
+                  value: "{{ split(element.image, '/')[0] }}"
+            deny:
+              conditions:
+                all:
+                  - key: "{{ imageRegistry }}"
+                    operator: NotEquals
+                    value: "123456789012.dkr.ecr.us-west-2.amazonaws.com"
+---
+# -----------------------------------------------------------------------------
+# 4. require-resource-limits
+# Requires CPU/memory limits on all pods
+# -----------------------------------------------------------------------------
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-resource-limits
+  annotations:
+    policies.kyverno.io/title: Require Resource Limits
+    policies.kyverno.io/category: Workload Management
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Requires all containers to specify CPU and memory resource requests and limits.
+      This prevents resource starvation and ensures predictable scheduling behavior.
+      DaemonSets and system components are excluded.
+    policies.kyverno.io/minversion: "1.8.0"
+    cyber-secure: "true"
+spec:
+  validationFailureAction: Enforce
+  background: true
+  failurePolicy: Fail
+  rules:
+    - name: require-resource-requests
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - kube-public
+                - monitoring
+                - ingress-nginx
+                - falco
+                - kyverno
+                - chaos-engineering
+      validate:
+        message: "All containers must specify resource requests and limits for CPU and memory."
+        pattern:
+          spec:
+            containers:
+              - resources:
+                  requests:
+                    cpu: "?*"
+                    memory: "?*"
+                  limits:
+                    cpu: "?*"
+                    memory: "?*"
+    - name: validate-resource-reasonableness
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - kube-public
+      validate:
+        message: "CPU limits must not exceed 4 cores and memory limits must not exceed 8Gi per container."
+        pattern:
+          spec:
+            containers:
+              - resources:
+                  limits:
+                    cpu: "<=4"
+                    memory: "<=8Gi"
+---
+# -----------------------------------------------------------------------------
+# 5. require-readiness-probe
+# Requires readiness probes on all pods
+# -----------------------------------------------------------------------------
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-readiness-probe
+  annotations:
+    policies.kyverno.io/title: Require Readiness Probe
+    policies.kyverno.io/category: Workload Management
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Requires that all pods expose a readiness probe. This ensures traffic
+      is only routed to pods that are ready to serve requests, preventing
+      downtime during rolling updates and scaling events.
+    policies.kyverno.io/minversion: "1.8.0"
+    cyber-secure: "true"
+spec:
+  validationFailureAction: Enforce
+  background: true
+  failurePolicy: Fail
+  rules:
+    - name: require-readiness-probe
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - kube-public
+                - monitoring
+                - ingress-nginx
+                - falco
+                - kyverno
+                - chaos-engineering
+      validate:
+        message: "All containers defined in the spec must specify a readiness probe."
+        pattern:
+          spec:
+            containers:
+              - readinessProbe:
+                  "?*"
+---
+# -----------------------------------------------------------------------------
+# 6. require-liveness-probe
+# Requires liveness probes on all pods
+# -----------------------------------------------------------------------------
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-liveness-probe
+  annotations:
+    policies.kyverno.io/title: Require Liveness Probe
+    policies.kyverno.io/category: Workload Management
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Requires that all pods define a liveness probe to automatically
+      restart unhealthy containers. This ensures self-healing capability
+      and maintains application availability.
+    policies.kyverno.io/minversion: "1.8.0"
+    cyber-secure: "true"
+spec:
+  validationFailureAction: Enforce
+  background: true
+  failurePolicy: Fail
+  rules:
+    - name: require-liveness-probe
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - kube-public
+                - monitoring
+                - ingress-nginx
+                - falco
+                - kyverno
+                - chaos-engineering
+      validate:
+        message: "All containers defined in the spec must specify a liveness probe."
+        pattern:
+          spec:
+            containers:
+              - livenessProbe:
+                  "?*"
+---
+# -----------------------------------------------------------------------------
+# 7. block-privileged-escalation
+# Blocks privilege escalation in containers
+# -----------------------------------------------------------------------------
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: block-privileged-escalation
+  annotations:
+    policies.kyverno.io/title: Block Privilege Escalation
+    policies.kyverno.io/category: Pod Security
+    policies.kyverno.io/severity: critical
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Blocks privilege escalation via allowPrivilegeEscalation: true.
+      This prevents processes in containers from gaining more privileges
+      than their parent process, a common vector for container breakout attacks.
+    policies.kyverno.io/minversion: "1.8.0"
+    cyber-secure: "true"
+spec:
+  validationFailureAction: Enforce
+  background: true
+  failurePolicy: Fail
+  rules:
+    - name: block-privilege-escalation
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - kube-public
+                - monitoring
+                - ingress-nginx
+                - falco
+                - kyverno
+                - chaos-engineering
+      validate:
+        message: "Privilege escalation is not allowed. Set allowPrivilegeEscalation to false for all containers."
+        pattern:
+          spec:
+            containers:
+              - securityContext:
+                  allowPrivilegeEscalation: false
+            =(initContainers):
+              - securityContext:
+                  allowPrivilegeEscalation: false
+            =(ephemeralContainers):
+              - securityContext:
+                  allowPrivilegeEscalation: false
+---
+# -----------------------------------------------------------------------------
+# 8. block-host-network
+# Blocks host networking access
+# -----------------------------------------------------------------------------
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: block-host-network
+  annotations:
+    policies.kyverno.io/title: Block Host Networking
+    policies.kyverno.io/category: Pod Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Blocks pods from using host networking. Host network access allows
+      a pod to bypass network policies and observe host-level network traffic,
+      which is a significant security risk for multi-tenant clusters.
+    policies.kyverno.io/minversion: "1.8.0"
+    cyber-secure: "true"
+spec:
+  validationFailureAction: Enforce
+  background: true
+  failurePolicy: Fail
+  rules:
+    - name: block-host-network
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - kube-public
+                - monitoring
+                - ingress-nginx
+                - falco
+                - kyverno
+                - chaos-engineering
+      validate:
+        message: "Host networking is not allowed. Set spec.hostNetwork to false or omit the field."
+        pattern:
+          spec:
+            hostNetwork: false
+---
+# -----------------------------------------------------------------------------
+# 9. block-host-path
+# Blocks host path volume mounts
+# -----------------------------------------------------------------------------
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: block-host-path
+  annotations:
+    policies.kyverno.io/title: Block Host Path Volumes
+    policies.kyverno.io/category: Pod Security
+    policies.kyverno.io/severity: critical
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Blocks all hostPath volume mounts. Host paths allow pods to access
+      the underlying node filesystem, which can lead to container breakout,
+      data exfiltration, and node compromise.
+    policies.kyverno.io/minversion: "1.8.0"
+    cyber-secure: "true"
+spec:
+  validationFailureAction: Enforce
+  background: true
+  failurePolicy: Fail
+  rules:
+    - name: block-host-path
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - kube-public
+                - monitoring
+                - ingress-nginx
+                - falco
+                - kyverno
+                - chaos-engineering
+      validate:
+        message: "hostPath volumes are not allowed. Use PersistentVolumeClaims, ConfigMaps, or emptyDir instead."
+        pattern:
+          spec:
+            volumes:
+              - X(hostPath): "?*"
+---
+# -----------------------------------------------------------------------------
+# 10. block-node-port-services
+# Blocks NodePort service types (enforce LoadBalancer or ClusterIP only)
+# -----------------------------------------------------------------------------
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: block-node-port-services
+  annotations:
+    policies.kyverno.io/title: Block NodePort Services
+    policies.kyverno.io/category: Network Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Service
+    policies.kyverno.io/description: >-
+      Blocks creation of NodePort type services. NodePort exposes the service
+      on a static port on every node's IP, bypassing load balancers and
+      network policies. Use ClusterIP with an Ingress or LoadBalancer instead.
+    policies.kyverno.io/minversion: "1.8.0"
+    cyber-secure: "true"
+spec:
+  validationFailureAction: Enforce
+  background: true
+  failurePolicy: Fail
+  rules:
+    - name: block-node-port-services
+      match:
+        any:
+          - resources:
+              kinds:
+                - Service
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - kube-public
+                - monitoring
+                - ingress-nginx
+                - chaos-engineering
+      validate:
+        message: "NodePort services are not allowed. Use ClusterIP with Ingress or LoadBalancer instead."
+        pattern:
+          spec:
+            type: "!NodePort"
+---
+# -----------------------------------------------------------------------------
+# 11. require-non-root-user
+# Requires non-root user execution
+# -----------------------------------------------------------------------------
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-non-root-user
+  annotations:
+    policies.kyverno.io/title: Require Non-Root User
+    policies.kyverno.io/category: Pod Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Requires all containers to run as a non-root user by enforcing
+      runAsNonRoot: true. Running as root inside a container increases the
+      blast radius of container breakout vulnerabilities.
+    policies.kyverno.io/minversion: "1.8.0"
+    cyber-secure: "true"
+spec:
+  validationFailureAction: Enforce
+  background: true
+  failurePolicy: Fail
+  rules:
+    - name: require-non-root-user
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - kube-public
+                - monitoring
+                - ingress-nginx
+                - falco
+                - kyverno
+                - chaos-engineering
+      validate:
+        message: "Containers must run as non-root. Set securityContext.runAsNonRoot to true and specify a non-zero runAsUser."
+        pattern:
+          spec:
+            containers:
+              - securityContext:
+                  runAsNonRoot: true
+            =(initContainers):
+              - securityContext:
+                  runAsNonRoot: true
+    - name: require-non-zero-runasuser
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - kube-public
+      validate:
+        message: "runAsUser must be set to a non-zero value (1000-65535 recommended)."
+        pattern:
+          spec:
+            =securityContext:
+              =(runAsUser): ">0"
+            containers:
+              - =securityContext:
+                  =(runAsUser): ">0"
+---
+# -----------------------------------------------------------------------------
+# 12. require-readonly-root
+# Requires read-only root filesystem
+# -----------------------------------------------------------------------------
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-readonly-root
+  annotations:
+    policies.kyverno.io/title: Require Read-Only Root Filesystem
+    policies.kyverno.io/category: Pod Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Requires all containers to have a read-only root filesystem.
+      This prevents malware from writing to the container filesystem and
+      ensures all writable paths are explicitly mounted via emptyDir volumes.
+    policies.kyverno.io/minversion: "1.8.0"
+    cyber-secure: "true"
+spec:
+  validationFailureAction: Enforce
+  background: true
+  failurePolicy: Fail
+  rules:
+    - name: require-readonly-root
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - kube-public
+                - monitoring
+                - ingress-nginx
+                - falco
+                - kyverno
+                - chaos-engineering
+      validate:
+        message: "All containers must set securityContext.readOnlyRootFilesystem to true."
+        pattern:
+          spec:
+            containers:
+              - securityContext:
+                  readOnlyRootFilesystem: true
+---
+# -----------------------------------------------------------------------------
+# 13. block-default-serviceaccount
+# Blocks usage of the default service account
+# -----------------------------------------------------------------------------
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: block-default-serviceaccount
+  annotations:
+    policies.kyverno.io/title: Block Default Service Account
+    policies.kyverno.io/category: Security Best Practices
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Prevents pods from using the default service account in each namespace.
+      Each workload must have a dedicated service account with least-privilege
+      RBAC permissions. This prevents over-permissioning and reduces blast radius.
+    policies.kyverno.io/minversion: "1.8.0"
+    cyber-secure: "true"
+spec:
+  validationFailureAction: Enforce
+  background: true
+  failurePolicy: Fail
+  rules:
+    - name: block-default-serviceaccount
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - kube-public
+                - monitoring
+                - ingress-nginx
+                - falco
+                - kyverno
+                - chaos-engineering
+      validate:
+        message: "Pods must not use the 'default' ServiceAccount. Create and reference a dedicated ServiceAccount with least-privilege permissions."
+        pattern:
+          spec:
+            serviceAccountName: "!default"
+---
+# -----------------------------------------------------------------------------
+# 14. require-network-policy
+# Requires NetworkPolicy on all namespaces
+# -----------------------------------------------------------------------------
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-network-policy
+  annotations:
+    policies.kyverno.io/title: Require Network Policy
+    policies.kyverno.io/category: Network Security
+    policies.kyverno.io/severity: critical
+    policies.kyverno.io/subject: Namespace
+    policies.kyverno.io/description: >-
+      Requires every namespace to have at least one NetworkPolicy.
+      Namespaces without network policies allow all traffic by default,
+      violating the principle of least-privilege networking.
+    policies.kyverno.io/minversion: "1.8.0"
+    cyber-secure: "true"
+spec:
+  validationFailureAction: Enforce
+  background: true
+  failurePolicy: Fail
+  rules:
+    - name: require-network-policy
+      match:
+        any:
+          - resources:
+              kinds:
+                - Namespace
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - kube-public
+      context:
+        - name: networkpolicies
+          apiCall:
+            urlPath: "/apis/networking.k8s.io/v1/networkpolicies"
+            jmesPath: "items[?metadata.namespace=='{{ request.object.metadata.name }}'] | length(@)"
+      preconditions:
+        all:
+          - key: "{{ request.object.metadata.name }}"
+            operator: NotEquals
+            value: kube-system
+          - key: "{{ request.object.metadata.name }}"
+            operator: NotEquals
+            value: kube-public
+      validate:
+        message: "Namespace {{ request.object.metadata.name }} must have at least one NetworkPolicy defined."
+        deny:
+          conditions:
+            any:
+              - key: "{{ networkpolicies }}"
+                operator: Equals
+                value: 0
+---
+# -----------------------------------------------------------------------------
+# 15. block-loadbalancer-external
+# Blocks LoadBalancer services in non-production namespaces
+# -----------------------------------------------------------------------------
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: block-loadbalancer-external
+  annotations:
+    policies.kyverno.io/title: Block LoadBalancer Services
+    policies.kyverno.io/category: Network Security
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Service
+    policies.kyverno.io/description: >-
+      Blocks LoadBalancer type services in namespaces not labeled with
+      environment: production. This prevents accidental exposure of
+      non-production services to the internet via cloud load balancers.
+    policies.kyverno.io/minversion: "1.8.0"
+    cyber-secure: "true"
+spec:
+  validationFailureAction: Enforce
+  background: true
+  failurePolicy: Fail
+  rules:
+    - name: block-loadbalancer-nonprod
+      match:
+        any:
+          - resources:
+              kinds:
+                - Service
+      preconditions:
+        all:
+          - key: "{{ request.object.spec.type }}"
+            operator: Equals
+            value: LoadBalancer
+          - key: "{{ request.namespace.labels.environment || '' }}"
+            operator: NotEquals
+            value: production
+      validate:
+        message: "LoadBalancer type services are only allowed in namespaces with label environment=production."
+        deny: {}
+---
+# -----------------------------------------------------------------------------
+# 16. allowed-annotations
+# Only allow specific annotations on resources
+# -----------------------------------------------------------------------------
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: allowed-annotations
+  annotations:
+    policies.kyverno.io/title: Allowed Annotations
+    policies.kyverno.io/category: Security Best Practices
+    policies.kyverno.io/severity: low
+    policies.kyverno.io/subject: Pod, Deployment, Service, Ingress
+    policies.kyverno.io/description: >-
+      Restricts which annotations can be set on resources to prevent
+      abuse of annotation-based configuration that could weaken security
+      controls. Only allow known safe annotation prefixes.
+    policies.kyverno.io/minversion: "1.8.0"
+    cyber-secure: "true"
+spec:
+  validationFailureAction: Audit
+  background: true
+  failurePolicy: Fail
+  rules:
+    - name: allowed-annotations
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+                - Deployment
+                - Service
+                - Ingress
+      validate:
+        message: "Only annotations with prefixes 'sidecar.istio.io', 'prometheus.io', 'linkerd.io', 'app.kubernetes.io', or 'cyber-secure' are allowed."
+        pattern:
+          metadata:
+            =(annotations):
+              - key: "*"
+                value: "*"
+        deny:
+          conditions:
+            any:
+              - key: "{{ request.object.metadata.annotations.keys(@) | length }}"
+                operator: GreaterThan
+                value: 0
+---
+# -----------------------------------------------------------------------------
+# 17. require-pod-anti-affinity
+# Requires pod anti-affinity for high availability
+# -----------------------------------------------------------------------------
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-pod-anti-affinity
+  annotations:
+    policies.kyverno.io/title: Require Pod Anti-Affinity
+    policies.kyverno.io/category: High Availability
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Deployment, StatefulSet
+    policies.kyverno.io/description: >-
+      Requires Deployments and StatefulSets with more than 1 replica to
+      define pod anti-affinity rules. This ensures pods are scheduled
+      across different nodes for high availability and fault tolerance.
+    policies.kyverno.io/minversion: "1.8.0"
+    cyber-secure: "true"
+spec:
+  validationFailureAction: Enforce
+  background: true
+  failurePolicy: Fail
+  rules:
+    - name: require-pod-anti-affinity
+      match:
+        any:
+          - resources:
+              kinds:
+                - Deployment
+                - StatefulSet
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - kube-public
+                - monitoring
+                - ingress-nginx
+                - falco
+                - kyverno
+                - chaos-engineering
+      preconditions:
+        all:
+          - key: "{{ request.object.spec.replicas || 1 }}"
+            operator: GreaterThan
+            value: 1
+      validate:
+        message: "Deployments and StatefulSets with more than 1 replica must define pod anti-affinity rules for high availability."
+        pattern:
+          spec:
+            template:
+              spec:
+                affinity:
+                  podAntiAffinity:
+                    preferredDuringSchedulingIgnoredDuringExecution:
+                      - ?*
+---
+# -----------------------------------------------------------------------------
+# 18. validate-env-vars
+# Validates environment variable naming conventions and blocks sensitive values
+# -----------------------------------------------------------------------------
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: validate-env-vars
+  annotations:
+    policies.kyverno.io/title: Validate Environment Variables
+    policies.kyverno.io/category: Security Best Practices
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Validates environment variable naming conventions. Enforces UPPER_SNAKE_CASE
+      format and blocks inline secrets (plaintext passwords, API keys, tokens).
+      All secrets must be referenced from Secret or ConfigMap resources.
+    policies.kyverno.io/minversion: "1.8.0"
+    cyber-secure: "true"
+spec:
+  validationFailureAction: Enforce
+  background: true
+  failurePolicy: Fail
+  rules:
+    - name: block-inline-secrets
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - kube-public
+      validate:
+        message: "Environment variables must not contain inline secrets. Use valueFrom.secretKeyRef instead."
+        foreach:
+          - list: "request.object.spec.containers"
+            foreach:
+              - list: "element.env[]"
+                deny:
+                  conditions:
+                    any:
+                      - key: "{{ element.name }}"
+                        operator: Matches
+                        value: "(?i)^(PASSWORD|PASSWD|SECRET|API_KEY|API_SECRET|TOKEN|ACCESS_KEY|PRIVATE_KEY)"
+---
+# -----------------------------------------------------------------------------
+# 19. block-downward-api-mounts
+# Blocks downward API volume mounts (except for specific fields)
+# -----------------------------------------------------------------------------
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: block-downward-api-mounts
+  annotations:
+    policies.kyverno.io/title: Block Downward API Mounts
+    policies.kyverno.io/category: Pod Security
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Blocks the use of downward API volume mounts except for specific
+      allowed fields. Downward API can expose node-level metadata that
+      could be used for privilege escalation or pod enumeration.
+    policies.kyverno.io/minversion: "1.8.0"
+    cyber-secure: "true"
+spec:
+  validationFailureAction: Enforce
+  background: true
+  failurePolicy: Fail
+  rules:
+    - name: block-downward-api-mounts
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - kube-public
+                - monitoring
+                - ingress-nginx
+                - falco
+                - kyverno
+                - chaos-engineering
+      validate:
+        message: "Downward API volume mounts are not allowed. Use environment variable fieldRef for pod metadata instead."
+        pattern:
+          spec:
+            volumes:
+              - X(downwardAPI): "?*"
+---
+# -----------------------------------------------------------------------------
+# 20. require-service-mesh-injection
+# Requires Istio sidecar injection labels on all namespaces
+# -----------------------------------------------------------------------------
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-service-mesh-injection
+  annotations:
+    policies.kyverno.io/title: Require Service Mesh Injection
+    policies.kyverno.io/category: Service Mesh Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Namespace
+    policies.kyverno.io/description: >-
+      Requires all application namespaces to have the istio-injection=enabled
+      label for automatic sidecar injection. Service mesh provides mTLS,
+      fine-grained access control, and observability for all service-to-service
+      communication.
+    policies.kyverno.io/minversion: "1.8.0"
+    cyber-secure: "true"
+spec:
+  validationFailureAction: Enforce
+  background: true
+  failurePolicy: Fail
+  rules:
+    - name: require-istio-injection
+      match:
+        any:
+          - resources:
+              kinds:
+                - Namespace
+      preconditions:
+        all:
+          - key: "{{ request.object.metadata.labels.\"pod-security.kubernetes.io/enforce\" || '' }}"
+            operator: Equals
+            value: restricted
+      validate:
+        message: "All namespaces enforcing restricted Pod Security Standards must have istio-injection=enabled label for mutual TLS."
+        pattern:
+          metadata:
+            labels:
+              istio-injection: enabled

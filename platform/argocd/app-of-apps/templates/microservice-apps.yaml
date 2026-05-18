@@ -1,0 +1,67 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: microservices
+  namespace: argocd
+spec:
+  generators:
+    - matrix:
+        generators:
+          - list:
+              elements:
+                - name: frontend-service
+                - name: auth-service
+                - name: payment-service
+                - name: notification-service
+                - name: aiops-engine
+          - list:
+              elements:
+                - environment: dev
+                  destinationCluster: https://kubernetes.default.svc
+                  targetRevision: develop
+                - environment: staging
+                  destinationCluster: https://kubernetes.default.svc
+                  targetRevision: staging
+                - environment: prod
+                  destinationCluster: https://kubernetes.default.svc
+                  targetRevision: prod
+  template:
+    metadata:
+      name: '{{name}}-{{environment}}'
+      namespace: argocd
+      labels:
+        app: '{{name}}'
+        environment: '{{environment}}'
+    spec:
+      project: '{{environment}}'
+      source:
+        repoURL: https://github.com/org/aiops-platform-gitops
+        targetRevision: '{{targetRevision}}'
+        path: 'helm-charts/{{name}}'
+        helm:
+          valueFiles:
+            - values.yaml
+            - '../../environments/{{environment}}/values-{{name}}.yaml'
+      destination:
+        server: '{{destinationCluster}}'
+        namespace: '{{name}}'
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+          allowEmpty: false
+        syncOptions:
+          - CreateNamespace=true
+          - PruneLast=true
+          - ApplyOutOfSyncOnly=true
+          - RespectIgnoreDifferences=true
+        managedNamespaceMetadata:
+          labels:
+            istio-injection: enabled
+            pod-security.kubernetes.io/enforce: restricted
+      ignoreDifferences:
+        - group: apps
+          kind: Deployment
+          jsonPointers:
+            - /spec/replicas
+            - /spec/template/spec/containers/0/image

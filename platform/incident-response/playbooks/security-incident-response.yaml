@@ -1,0 +1,94 @@
+name: Security Incident Response Playbook
+version: "1.0"
+owner: Security Team
+review_frequency: monthly
+
+incident_types:
+  - type: container_breakout
+    severity: critical
+    detection:
+      - Falco rule: "Container breakout detected"
+      - Falco rule: "Sensitive file access in container"
+    immediate_actions:
+      - action: quarantine_namespace
+        description: "Apply network isolation to compromised namespace"
+        runbook_script: "scripts/self-healing/remediations/quarantine-namespace.sh"
+        timeout: "60s"
+      - action: revoke_credentials
+        description: "Rotate all service account tokens in affected namespace"
+      - action: capture_forensic_data
+        description: "Capture pod logs and filesystem state for analysis"
+        command: "kubectl logs --all-containers --tail=10000 > forensics/{pod}-{timestamp}.log"
+    investigation:
+      - "Identify entry point and attack vector via audit logs"
+      - "Review Kubernetes audit logs for API abuse"
+      - "Check for lateral movement indicators in network flows"
+      - "Review container image for known vulnerabilities"
+    remediation:
+      - "Recreate pods with clean images from trusted registry"
+      - "Patch vulnerability if identified"
+      - "Update security policies to prevent recurrence"
+    postmortem:
+      - "Root cause analysis document required within 48 hours"
+      - "Security incident report for compliance"
+      - "Update runbooks and detection rules"
+
+  - type: crypto_miner
+    severity: critical
+    detection:
+      - "Falco rule: Crypto miner process detected"
+      - "Sustained high CPU usage on pod"
+      - "Outbound connections to known mining pool IPs"
+    immediate_actions:
+      - action: "Kill malicious process and terminate pod"
+      - action: "Isolate namespace with egress-deny network policy"
+      - action: "Scan container image for vulnerabilities"
+    remediation:
+      - "Remove and rebuild container from trusted base image"
+      - "Update image scanning rules to block known miner images"
+    investigation:
+      - "Determine how miner was injected"
+      - "Review CI/CD pipeline integrity"
+      - "Check for compromised credentials"
+
+  - type: reverse_shell
+    severity: critical
+    detection:
+      - "Falco rule: Reverse shell detected via netcat"
+      - "Falco rule: Reverse shell detected via /dev/tcp"
+      - "Unexpected outbound connection on ephemeral port"
+    immediate_actions:
+      - action: "Immediately delete compromised pod"
+      - action: "Block all egress from affected namespace"
+      - action: "Revoke and rotate service account credentials"
+    remediation:
+      - "Investigate CI/CD pipeline compromise"
+      - "Rotate all secrets in affected namespace"
+      - "Perform full security audit"
+
+  - type: privilege_escalation
+    severity: high
+    detection:
+      - "Falco rule: Privilege escalation attempt"
+      - "Container trying to mount host paths"
+      - "setuid/setcap binary execution in container"
+    immediate_actions:
+      - action: "Restart pod with restricted security context"
+      - action: "Apply PodSecurityPolicy enforcement"
+    remediation:
+      - "Review and update Kyverno policies"
+      - "Ensure all pods run as non-root"
+
+severity_matrix:
+  critical:
+    response_time: "5 minutes"
+    escalation: "PagerDuty + On-call SRE + Security Lead"
+    notification: "#alerts-security + #alerts-critical"
+  high:
+    response_time: "15 minutes"
+    escalation: "On-call SRE"
+    notification: "#alerts-security"
+  medium:
+    response_time: "60 minutes"
+    escalation: "Business hours on-call"
+    notification: "#alerts-security-summary"

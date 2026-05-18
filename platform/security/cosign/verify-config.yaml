@@ -1,0 +1,141 @@
+---
+# =============================================================================
+# Cosign Verification Configuration
+# Used by Kyverno verifyImages rules for signature verification
+# =============================================================================
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cosign-verify-config
+  namespace: kyverno
+  labels:
+    app: kyverno
+    cyber-secure: "true"
+    component: cosign
+  annotations:
+    description: "Cosign public key configuration for image signature verification"
+data:
+  # Production Cosign public key used for verifying image signatures
+  publicKeys: |
+    -----BEGIN PUBLIC KEY-----
+    MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEzq9L5sFy5J7yG7oJ8e8Yz3Jw
+    v5w3xL0y9kG6Qz5n0Y7z1v2oX4pR6sT8aBcDfGhJkLmNpQrStUvWxYzA
+    -----END PUBLIC KEY-----
+
+  # Development Cosign public key (separate key for dev environments)
+  devPublicKeys: |
+    -----BEGIN PUBLIC KEY-----
+    MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE0J3xK7jL8eYz2pQ5n8F1sT6v
+    w9bR4cGhJkLmNpQrStUvWxYzA3B2C5D6E7F8G9H0I1J2K3L4M5N6O7P8Q9
+    -----END PUBLIC KEY-----
+---
+# =============================================================================
+# Cosign Verification Deployment (Optional sidecar for key management)
+# =============================================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cosign-verifier
+  namespace: kyverno
+  labels:
+    app: cosign-verifier
+    cyber-secure: "true"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: cosign-verifier
+  template:
+    metadata:
+      labels:
+        app: cosign-verifier
+        cyber-secure: "true"
+    spec:
+      serviceAccountName: kyverno
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: cosign-verifier
+          image: 123456789012.dkr.ecr.us-west-2.amazonaws.com/kyverno/cosign-verifier:v0.1.0
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          volumeMounts:
+            - name: cosign-keys
+              mountPath: /etc/cosign/keys
+              readOnly: true
+          env:
+            - name: COSIGN_PUBLIC_KEY_PATH
+              value: /etc/cosign/keys/public.key
+            - name: COSIGN_REPOSITORY
+              value: ""
+            - name: LOG_LEVEL
+              value: info
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: cosign-keys
+          configMap:
+            name: cosign-verify-config
+            items:
+              - key: publicKeys
+                path: public.key
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - cosign-verifier
+                topologyKey: kubernetes.io/hostname
+---
+# =============================================================================
+# TTL for Cosign verification cache
+# =============================================================================
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cosign-cache-config
+  namespace: kyverno
+  labels:
+    app: kyverno
+    cyber-secure: "true"
+data:
+  verify-cache.yaml: |
+    ttl: 60m
+    maxSize: 1000
+    enabled: true
+    refreshInterval: 30m

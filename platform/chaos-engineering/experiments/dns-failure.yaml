@@ -1,0 +1,17 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: DNSChaos
+metadata:
+  name: dns-error-frontend
+  namespace: chaos-engineering
+spec:
+  action: error
+  mode: all
+  patterns:
+    - "auth-service*"
+    - "payment-service*"
+  selector:
+    namespaces:
+      - frontend-service
+  duration: "60s"
+  scheduler:
+    cron: "@every 120h"

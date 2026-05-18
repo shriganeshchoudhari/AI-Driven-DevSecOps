@@ -1,0 +1,55 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: pod-kill-frontend
+  namespace: chaos-engineering
+spec:
+  action: pod-kill
+  mode: one
+  duration: "60s"
+  selector:
+    namespaces:
+      - frontend-service
+    labelSelectors:
+      app: frontend-service
+  scheduler:
+    cron: "@every 24h"
+---
+apiVersion: chaos-mesh.org/v1alpha1
+kind: Schedule
+metadata:
+  name: weekly-pod-kill-payment
+  namespace: chaos-engineering
+spec:
+  schedule: "0 14 * * 5"
+  historyLimit: 5
+  concurrencyPolicy: Allow
+  type: PodChaos
+  podChaos:
+    action: pod-kill
+    mode: one
+    duration: "120s"
+    selector:
+      namespaces:
+        - payment-service
+      labelSelectors:
+        app: payment-service
+---
+apiVersion: chaos-mesh.org/v1alpha1
+kind: Schedule
+metadata:
+  name: monthly-pod-kill-auth
+  namespace: chaos-engineering
+spec:
+  schedule: "0 10 1 * *"
+  historyLimit: 3
+  type: PodChaos
+  podChaos:
+    action: pod-kill
+    mode: one
+    duration: "60s"
+    selector:
+      namespaces:
+        - auth-service
+      labelSelectors:
+        app: auth-service

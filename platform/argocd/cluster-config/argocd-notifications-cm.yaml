@@ -1,0 +1,56 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-notifications-cm
+  namespace: argocd
+data:
+  service.slack: |
+    token: $slack-token
+    username: ArgoCD Bot
+  service.pagerduty: |
+    routingKey: $pagerduty-routing-key
+  trigger.on-sync-succeeded: |
+    - description: Application sync succeeded
+      send:
+        - slack-channel
+        - pagerduty
+      when: app.status.sync.status == 'Synced' and app.status.health.status == 'Healthy'
+  trigger.on-sync-failed: |
+    - description: Application sync failed
+      send:
+        - slack-channel
+        - pagerduty
+      when: app.status.sync.status == 'OutOfSync' or app.status.health.status == 'Degraded'
+  trigger.on-sync-running: |
+    - description: Application sync started
+      send:
+        - slack-channel
+      when: app.status.sync.status == 'Syncing'
+  template.slack-channel: |
+    message: |
+      *{{.app.metadata.name}}* {{.app.status.sync.status}} / {{.app.status.health.status}}
+      Repository: {{.app.spec.source.repoURL}}
+      Revision: {{.app.status.sync.revision}}
+      {{range .app.status.conditions}}
+      - {{.message}}
+      {{end}}
+    slack:
+      attachments:
+        - title: '{{.app.metadata.name}}'
+          title_link: '{{.context.argocdUrl}}/applications/{{.app.metadata.name}}'
+          color: '{{if eq .app.status.health.status "Healthy"}}good{{else}}danger{{end}}'
+          fields:
+            - title: Sync Status
+              value: '{{.app.status.sync.status}}'
+              short: true
+            - title: Health
+              value: '{{.app.status.health.status}}'
+              short: true
+  template.pagerduty: |
+    pagerduty:
+      summary: 'ArgoCD: {{.app.metadata.name}} sync {{.app.status.sync.status}}'
+      source: 'ArgoCD'
+      severity: '{{if eq .app.status.sync.status "Synced"}}info{{else}}error{{end}}'
+      component: '{{.app.metadata.name}}'
+      group: 'ArgoCD Applications'
+      class: 'deployment'

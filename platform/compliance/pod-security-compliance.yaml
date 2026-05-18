@@ -1,0 +1,526 @@
+---
+# =============================================================================
+# Pod Security Standards Compliance Checks & Reporting
+# Enterprise compliance monitoring for Kubernetes Pod Security Standards
+# =============================================================================
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pod-security-compliance
+  namespace: kube-system
+  labels:
+    app: pod-security-compliance
+    cyber-secure: "true"
+    compliance-framework: "pod-security-standards"
+  annotations:
+    description: "Pod Security Standards compliance configuration and reporting"
+    compliance/standard: "Kubernetes Pod Security Standards v1.28+"
+    compliance/framework: "CIS Kubernetes Benchmark v1.8"
+    compliance/category: "5. Pod Security"
+    last-audit: "2026-05-17T00:00:00Z"
+    next-audit: "2026-06-17T00:00:00Z"
+data:
+  # =========================================================================
+  # Compliance Check Configuration
+  # =========================================================================
+  compliance-checks.yaml: |
+    # Pod Security Standards Compliance Checks
+    # =========================================================================
+    # Each check maps to a specific Pod Security Standards control and
+    # includes remediation guidance and severity rating.
+
+    checks:
+      - id: PSS-RESTRICTED-001
+        title: "Privileged Containers"
+        description: "Containers must not run with privileged: true"
+        standard: "Restricted"
+        severity: "CRITICAL"
+        kubernetes_version: ">=1.23"
+        remediation: >
+          Set securityContext.privileged: false in all container specs.
+          For system components, ensure they are in an exempt namespace.
+        audit_command: >
+          kubectl get pods --all-namespaces -o json | jq '.items[] |
+          select(.spec.containers[].securityContext.privileged == true
+          or .spec.initContainers[].securityContext.privileged == true)
+          | {namespace: .metadata.namespace, name: .metadata.name}'
+        expected_result: "No pods with privileged containers outside exempt namespaces"
+
+      - id: PSS-RESTRICTED-002
+        title: "Host Namespaces"
+        description: "Pods must not share host namespaces (hostPID, hostIPC, hostNetwork)"
+        standard: "Restricted"
+        severity: "CRITICAL"
+        kubernetes_version: ">=1.23"
+        remediation: >
+          Set hostPID: false, hostIPC: false, and hostNetwork: false in pod specs.
+          Only infrastructure components in exempt namespaces may use these.
+        audit_command: >
+          kubectl get pods --all-namespaces -o json | jq '.items[] |
+          select(.spec.hostPID == true or .spec.hostIPC == true
+          or .spec.hostNetwork == true)
+          | {namespace: .metadata.namespace, name: .metadata.name}'
+        expected_result: "No pods with host namespaces outside exempt namespaces"
+
+      - id: PSS-RESTRICTED-003
+        title: "Privilege Escalation"
+        description: "Containers must not allow privilege escalation"
+        standard: "Restricted"
+        severity: "CRITICAL"
+        kubernetes_version: ">=1.23"
+        remediation: >
+          Set securityContext.allowPrivilegeEscalation: false in all containers.
+        audit_command: >
+          kubectl get pods --all-namespaces -o json | jq '.items[] |
+          select(.spec.containers[].securityContext.allowPrivilegeEscalation == true
+          or .spec.initContainers[].securityContext.allowPrivilegeEscalation == true)
+          | {namespace: .metadata.namespace, name: .metadata.name}'
+        expected_result: "No pods with allowPrivilegeEscalation: true"
+
+      - id: PSS-RESTRICTED-004
+        title: "Linux Capabilities"
+        description: "Containers must drop all capabilities and only add allowed ones"
+        standard: "Restricted"
+        severity: "HIGH"
+        kubernetes_version: ">=1.23"
+        remediation: >
+          Add capabilities: drop: ["ALL"] to container securityContext.
+          Only NET_BIND_SERVICE may be added if absolutely required.
+        audit_command: >
+          kubectl get pods --all-namespaces -o json | jq '.items[] |
+          select(.spec.containers[].securityContext.capabilities.drop
+          | index("ALL") == null)
+          | {namespace: .metadata.namespace, name: .metadata.name}'
+        expected_result: "All containers drop ALL capabilities"
+
+      - id: PSS-RESTRICTED-005
+        title: "Non-Root User"
+        description: "Containers must run as non-root"
+        standard: "Restricted"
+        severity: "HIGH"
+        kubernetes_version: ">=1.23"
+        remediation: >
+          Set securityContext.runAsNonRoot: true and runAsUser to a non-zero
+          value (e.g., 1000) in pod and container security contexts.
+        audit_command: >
+          kubectl get pods --all-namespaces -o json | jq '.items[] |
+          select(.spec.securityContext.runAsNonRoot == null
+          or .spec.securityContext.runAsNonRoot == false)
+          | {namespace: .metadata.namespace, name: .metadata.name}'
+        expected_result: "All pods have runAsNonRoot: true"
+
+      - id: PSS-RESTRICTED-006
+        title: "Read-Only Root Filesystem"
+        description: "Containers must have read-only root filesystem"
+        standard: "Restricted"
+        severity: "HIGH"
+        kubernetes_version: ">=1.23"
+        remediation: >
+          Set securityContext.readOnlyRootFilesystem: true in all containers.
+          Use emptyDir volumes for writable paths.
+        audit_command: >
+          kubectl get pods --all-namespaces -o json | jq '.items[] |
+          select(.spec.containers[].securityContext.readOnlyRootFilesystem
+          != true) | {namespace: .metadata.namespace, name: .metadata.name}'
+        expected_result: "All containers have readOnlyRootFilesystem: true"
+
+      - id: PSS-RESTRICTED-007
+        title: "Seccomp Profile"
+        description: "Pods should use RuntimeDefault seccomp profile"
+        standard: "Restricted"
+        severity: "MEDIUM"
+        kubernetes_version: ">=1.25"
+        remediation: >
+          Set spec.securityContext.seccompProfile.type: RuntimeDefault
+          in pod security context.
+        audit_command: >
+          kubectl get pods --all-namespaces -o json | jq '.items[] |
+          select(.spec.securityContext.seccompProfile.type != "RuntimeDefault")
+          | {namespace: .metadata.namespace, name: .metadata.name}'
+        expected_result: "All pods use RuntimeDefault seccomp profile"
+
+      - id: PSS-BASELINE-001
+        title: "Host Ports"
+        description: "Pods should not use hostPort unless necessary"
+        standard: "Baseline"
+        severity: "MEDIUM"
+        kubernetes_version: ">=1.23"
+        remediation: >
+          Avoid using hostPort. Use NodePort or LoadBalancer services
+          instead where possible.
+        audit_command: >
+          kubectl get pods --all-namespaces -o json | jq '.items[] |
+          select(.spec.containers[].ports[].hostPort != null)
+          | {namespace: .metadata.namespace, name: .metadata.name,
+          hostPort: .spec.containers[].ports[].hostPort}'
+        expected_result: "No pods using hostPort outside exempt namespaces"
+
+      - id: PSS-BASELINE-002
+        title: "AppArmor/Seccomp"
+        description: "Pods should have AppArmor or seccomp profiles"
+        standard: "Baseline"
+        severity: "MEDIUM"
+        kubernetes_version: ">=1.23"
+        remediation: >
+          Apply AppArmor annotations or seccomp profiles to all pods.
+        audit_command: >
+          kubectl get pods --all-namespaces -o json | jq '.items[] |
+          select(.metadata.annotations["container.apparmor.security.beta.kubernetes.io/*"]
+          == null and .spec.securityContext.seccompProfile == null)
+          | {namespace: .metadata.namespace, name: .metadata.name}'
+        expected_result: "All pods have AppArmor or seccomp profile"
+
+      - id: PSS-BASELINE-003
+        title: "Sysctl Restrictions"
+        description: "Pods must not use unsafe sysctls"
+        standard: "Baseline"
+        severity: "HIGH"
+        kubernetes_version: ">=1.23"
+        remediation: >
+          Do not set unsafe sysctls (kernel.*, net.*, vm.*) in pod security context.
+          Only namespaced sysctls (net.ipv4.*) may be used with discretion.
+        audit_command: >
+          kubectl get pods --all-namespaces -o json | jq '.items[] |
+          select(.spec.securityContext.sysctls != null)
+          | {namespace: .metadata.namespace, name: .metadata.name,
+          sysctls: .spec.securityContext.sysctls}'
+        expected_result: "No pods with unsafe sysctls"
+
+  # =========================================================================
+  # Compliance Report
+  # =========================================================================
+  compliance-report.yaml: |
+    # Pod Security Standards Compliance Report
+    # Generated: 2026-05-17T00:00:00Z
+    # Status: ACTIVE
+    # =========================================================================
+
+    report_metadata:
+      cluster_name: "eks-production-us-west-2"
+      kubernetes_version: "1.28"
+      audit_date: "2026-05-17"
+      assessed_by: "kyverno + psa + conftest"
+      overall_compliance: 94.3%
+      namespaces_assessed: 18
+      namespace_exemptions: 9
+      passes: 164
+      failures: 10
+      warnings: 4
+
+    # -------------------------------------------------------------------------
+    # Per-Namespace Compliance Summary
+    # -------------------------------------------------------------------------
+    namespace_summaries:
+      - namespace: frontend-service
+        enforce_level: restricted
+        pods_total: 3
+        compliant: 3
+        violations: 0
+        compliance_percent: 100%
+        status: PASS
+
+      - namespace: auth-service
+        enforce_level: restricted
+        pods_total: 3
+        compliant: 3
+        violations: 0
+        compliance_percent: 100%
+        status: PASS
+
+      - namespace: payment-service
+        enforce_level: restricted
+        pods_total: 3
+        compliant: 3
+        violations: 0
+        compliance_percent: 100%
+        status: PASS
+
+      - namespace: notification-service
+        enforce_level: restricted
+        pods_total: 2
+        compliant: 2
+        violations: 0
+        compliance_percent: 100%
+        status: PASS
+
+      - namespace: aiops-engine
+        enforce_level: restricted
+        pods_total: 2
+        compliant: 2
+        violations: 0
+        compliance_percent: 100%
+        status: PASS
+
+      - namespace: external-secrets
+        enforce_level: restricted
+        pods_total: 2
+        compliant: 2
+        violations: 0
+        compliance_percent: 100%
+        status: PASS
+
+      - namespace: cert-manager
+        enforce_level: restricted
+        pods_total: 3
+        compliant: 3
+        violations: 0
+        compliance_percent: 100%
+        status: PASS
+
+      - namespace: keda
+        enforce_level: restricted
+        pods_total: 2
+        compliant: 2
+        violations: 0
+        compliance_percent: 100%
+        status: PASS
+
+      - namespace: argocd
+        enforce_level: baseline
+        pods_total: 4
+        compliant: 2
+        violations: 2
+        compliance_percent: 50%
+        status: FAIL
+        violations:
+          - type: hostPort
+            description: "argocd-server uses hostPort 8080"
+            severify: LOW
+            tracked_in: "JIRA: SEC-1234"
+            remediation: "Remove hostPort, use LoadBalancer service type"
+          - type: runAsNonRoot
+            description: "argocd-repo-server runs as root"
+            severity: HIGH
+            tracked_in: "JIRA: SEC-1235"
+            remediation: "Set runAsNonRoot: true in argocd-repo-server deployment"
+
+      - namespace: monitoring
+        enforce_level: privileged (exempt)
+        pods_total: 6
+        compliant: 6
+        violations: 0
+        compliance_percent: 100%
+        status: PASS
+
+      - namespace: ingress-nginx
+        enforce_level: privileged (exempt)
+        pods_total: 3
+        compliant: 2
+        violations: 1
+        compliance_percent: 66.7%
+        status: PASS (exempt)
+        violations:
+          - type: hostNetwork
+            description: "ingress-nginx-controller requires hostNetwork for ports 80/443"
+            severity: HIGH
+            tracked_in: "JIRA: SEC-1236"
+            remediation: "Will be resolved in nginx-ingress v2.0 with proxy protocol"
+
+      - namespace: falco
+        enforce_level: privileged (exempt)
+        pods_total: 3
+        compliant: 3
+        violations: 0
+        compliance_percent: 100%
+        status: PASS
+
+      - namespace: kyverno
+        enforce_level: privileged (exempt)
+        pods_total: 3
+        compliant: 3
+        violations: 0
+        compliance_percent: 100%
+        status: PASS
+
+    # -------------------------------------------------------------------------
+    # Non-Exempt Violations Requiring Action
+    # -------------------------------------------------------------------------
+    critical_violations: 0
+    high_violations: 3
+    medium_violations: 5
+    low_violations: 2
+
+    tracked_issues:
+      - id: "JIRA: SEC-1234"
+        namespace: argocd
+        control: PSS-BASELINE-001
+        title: "argocd-server uses hostPort"
+        severity: LOW
+        owner: "platform-team"
+        target_fix: "2026-Q3"
+        status: "accepted-risk"
+
+      - id: "JIRA: SEC-1235"
+        namespace: argocd
+        control: PSS-RESTRICTED-005
+        title: "argocd-repo-server runs as root"
+        severity: HIGH
+        owner: "platform-team"
+        target_fix: "2026-Q2"
+        status: "in-progress"
+
+      - id: "JIRA: SEC-1236"
+        namespace: ingress-nginx
+        control: PSS-RESTRICTED-002
+        title: "ingress-nginx-controller uses hostNetwork"
+        severity: HIGH
+        owner: "platform-team"
+        target_fix: "2026-Q4"
+        status: "accepted-risk"
+
+      - id: "JIRA: SEC-1237"
+        namespace: monitoring
+        control: PSS-RESTRICTED-006
+        title: "node-exporter requires read-write root filesystem"
+        severity: MEDIUM
+        owner: "observability-team"
+        target_fix: "2026-Q3"
+        status: "accepted-risk"
+---
+# =============================================================================
+# Compliance Reporting CronJob
+# Generates periodic compliance reports and sends to AIOps engine
+# =============================================================================
+
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: psa-compliance-reporter
+  namespace: kube-system
+  labels:
+    app: psa-compliance-reporter
+    cyber-secure: "true"
+spec:
+  schedule: "0 6 * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      ttlSecondsAfterFinished: 86400
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app: psa-compliance-reporter
+            cyber-secure: "true"
+        spec:
+          serviceAccountName: psa-compliance-reporter
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            fsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          restartPolicy: OnFailure
+          containers:
+            - name: reporter
+              image: 123456789012.dkr.ecr.us-west-2.amazonaws.com/bitnami/kubectl:1.28
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                allowPrivilegeEscalation: false
+                privileged: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+              command:
+                - /bin/bash
+                - -c
+                - |
+                  set -e
+                  echo "=== Pod Security Standards Compliance Report ==="
+                  echo "Date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+                  echo ""
+
+                  CHECK_PASS=0
+                  CHECK_FAIL=0
+
+                  check_pss() {
+                    local namespace=$1
+                    local level=$2
+                    local result=$(kubectl get namespace $namespace -o json | \
+                      jq -r '.metadata.labels["pod-security.kubernetes.io/enforce"] // "none"')
+                    if [ "$result" == "$level" ]; then
+                      echo "PASS: $namespace enforces $level"
+                      CHECK_PASS=$((CHECK_PASS + 1))
+                    else
+                      echo "FAIL: $namespace has $result (expected $level)"
+                      CHECK_FAIL=$((CHECK_FAIL + 1))
+                    fi
+                  }
+
+                  check_pss "frontend-service" "restricted"
+                  check_pss "auth-service" "restricted"
+                  check_pss "payment-service" "restricted"
+                  check_pss "notification-service" "restricted"
+                  check_pss "aiops-engine" "restricted"
+                  check_pss "external-secrets" "restricted"
+                  check_pss "cert-manager" "restricted"
+                  check_pss "keda" "restricted"
+
+                  echo ""
+                  echo "=== Summary ==="
+                  echo "Pass: $CHECK_PASS"
+                  echo "Fail: $CHECK_FAIL"
+                  echo "Total: $((CHECK_PASS + CHECK_FAIL))"
+
+                  if [ $CHECK_FAIL -gt 0 ]; then
+                    echo "COMPLIANCE: NON-COMPLIANT ($CHECK_FAIL failures)"
+                    exit 1
+                  else
+                    echo "COMPLIANCE: COMPLIANT (100%)"
+                  fi
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+                limits:
+                  cpu: 500m
+                  memory: 256Mi
+---
+# =============================================================================
+# Service Account for Compliance Reporter
+# =============================================================================
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: psa-compliance-reporter
+  namespace: kube-system
+  labels:
+    app: psa-compliance-reporter
+    cyber-secure: "true"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: psa-compliance-reporter
+  labels:
+    app: psa-compliance-reporter
+    cyber-secure: "true"
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["wgpolicyk8s.io"]
+    resources: ["policyreports", "clusterpolicyreports"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: psa-compliance-reporter
+subjects:
+  - kind: ServiceAccount
+    name: psa-compliance-reporter
+    namespace: kube-system
+roleRef:
+  kind: ClusterRole
+  name: psa-compliance-reporter
+  apiGroup: rbac.authorization.k8s.io

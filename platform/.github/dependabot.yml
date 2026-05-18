@@ -1,0 +1,308 @@
+version: 2
+updates:
+  - package-ecosystem: 'github-actions'
+    directory: '/'
+    schedule:
+      interval: 'weekly'
+      day: 'monday'
+      time: '09:00'
+      timezone: 'America/Los_Angeles'
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: 'chore'
+      prefix-development: 'chore'
+      include: 'scope'
+    labels:
+      - 'dependencies'
+      - 'github-actions'
+      - 'automated'
+    reviewers:
+      - 'platform-lead'
+      - 'senior-devops'
+    assignees:
+      - 'devops-team'
+    milestone: 'platform-maintenance'
+    allow:
+      - dependency-type: 'direct'
+    ignore:
+      - dependency-name: 'actions/upload-artifact'
+        versions: ['<=3.x']
+    rebase-strategy: 'auto'
+
+  - package-ecosystem: 'docker'
+    directory: '/microservices/frontend-service'
+    schedule:
+      interval: 'weekly'
+      day: 'tuesday'
+      time: '09:00'
+      timezone: 'America/Los_Angeles'
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: 'docker'
+      include: 'scope'
+    labels:
+      - 'dependencies'
+      - 'docker'
+      - 'automated'
+    reviewers:
+      - 'frontend-lead'
+    assignees:
+      - 'frontend-team'
+    allow:
+      - dependency-type: 'direct'
+    rebase-strategy: 'auto'
+
+  - package-ecosystem: 'docker'
+    directory: '/microservices/auth-service'
+    schedule:
+      interval: 'weekly'
+      day: 'tuesday'
+      time: '09:00'
+      timezone: 'America/Los_Angeles'
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: 'docker'
+      include: 'scope'
+    labels:
+      - 'dependencies'
+      - 'docker'
+      - 'automated'
+    reviewers:
+      - 'auth-lead'
+    assignees:
+      - 'auth-team'
+    allow:
+      - dependency-type: 'direct'
+    rebase-strategy: 'auto'
+
+  - package-ecosystem: 'docker'
+    directory: '/microservices/payment-service'
+    schedule:
+      interval: 'weekly'
+      day: 'tuesday'
+      time: '09:00'
+      timezone: 'America/Los_Angeles'
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: 'docker'
+      include: 'scope'
+    labels:
+      - 'dependencies'
+      - 'docker'
+      - 'automated'
+    reviewers:
+      - 'payment-lead'
+    assignees:
+      - 'payment-team'
+    allow:
+      - dependency-type: 'direct'
+    rebase-strategy: 'auto'
+
+  - package-ecosystem: 'docker'
+    directory: '/microservices/notification-service'
+    schedule:
+      interval: 'weekly'
+      day: 'tuesday'
+      time: '09:00'
+      timezone: 'America/Los_Angeles'
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: 'docker'
+      include: 'scope'
+    labels:
+      - 'dependencies'
+      - 'docker'
+      - 'automated'
+    reviewers:
+      - 'notification-lead'
+    assignees:
+      - 'notification-team'
+    allow:
+      - dependency-type: 'direct'
+    rebase-strategy: 'auto'
+
+  - package-ecosystem: 'pip'
+    directory: '/microservices/frontend-service'
+    schedule:
+      interval: 'weekly'
+      day: 'wednesday'
+      time: '09:00'
+      timezone: 'America/Los_Angeles'
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: 'deps'
+      include: 'scope'
+    labels:
+      - 'dependencies'
+      - 'python'
+      - 'automated'
+    reviewers:
+      - 'frontend-lead'
+    assignees:
+      - 'frontend-team'
+    allow:
+      - dependency-type: 'direct'
+    rebase-strategy: 'auto'
+
+  - package-ecosystem: 'pip'
+    directory: '/microservices/auth-service'
+    schedule:
+      interval: 'weekly'
+      day: 'wednesday'
+      time: '09:00'
+      timezone: 'America/Los_Angeles'
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: 'deps'
+      include: 'scope'
+    labels:
+      - 'dependencies'
+      - 'python'
+      - 'automated'
+    reviewers:
+      - 'auth-lead'
+    assignees:
+      - 'auth-team'
+    allow:
+      - dependency-type: 'direct'
+    rebase-strategy: 'auto'
+
+  - package-ecosystem: 'pip'
+    directory: '/microservices/payment-service'
+    schedule:
+      interval: 'weekly'
+      day: 'wednesday'
+      time: '09:00'
+      timezone: 'America/Los_Angeles'
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: 'deps'
+      include: 'scope'
+    labels:
+      - 'dependencies'
+      - 'python'
+      - 'automated'
+    reviewers:
+      - 'payment-lead'
+    assignees:
+      - 'payment-team'
+    allow:
+      - dependency-type: 'direct'
+    rebase-strategy: 'auto'
+
+  - package-ecosystem: 'pip'
+    directory: '/microservices/notification-service'
+    schedule:
+      interval: 'weekly'
+      day: 'wednesday'
+      time: '09:00'
+      timezone: 'America/Los_Angeles'
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: 'deps'
+      include: 'scope'
+    labels:
+      - 'dependencies'
+      - 'python'
+      - 'automated'
+    reviewers:
+      - 'notification-lead'
+    assignees:
+      - 'notification-team'
+    allow:
+      - dependency-type: 'direct'
+    rebase-strategy: 'auto'
+
+  - package-ecosystem: 'npm'
+    directory: '/microservices/frontend-service'
+    schedule:
+      interval: 'weekly'
+      day: 'thursday'
+      time: '09:00'
+      timezone: 'America/Los_Angeles'
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: 'deps'
+      include: 'scope'
+    labels:
+      - 'dependencies'
+      - 'npm'
+      - 'automated'
+    reviewers:
+      - 'frontend-lead'
+    assignees:
+      - 'frontend-team'
+    allow:
+      - dependency-type: 'direct'
+    versioning-strategy: 'increase'
+    rebase-strategy: 'auto'
+
+  - package-ecosystem: 'gomod'
+    directory: '/microservices/auth-service'
+    schedule:
+      interval: 'weekly'
+      day: 'friday'
+      time: '09:00'
+      timezone: 'America/Los_Angeles'
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: 'deps'
+      include: 'scope'
+    labels:
+      - 'dependencies'
+      - 'go'
+      - 'automated'
+    reviewers:
+      - 'auth-lead'
+    assignees:
+      - 'auth-team'
+    allow:
+      - dependency-type: 'direct'
+    rebase-strategy: 'auto'
+
+  - package-ecosystem: 'terraform'
+    directory: '/terraform'
+    schedule:
+      interval: 'weekly'
+      day: 'monday'
+      time: '10:00'
+      timezone: 'America/Los_Angeles'
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: 'terraform'
+      include: 'scope'
+    labels:
+      - 'dependencies'
+      - 'terraform'
+      - 'automated'
+    reviewers:
+      - 'platform-lead'
+      - 'senior-devops'
+    assignees:
+      - 'devops-team'
+    allow:
+      - dependency-type: 'direct'
+    rebase-strategy: 'auto'
+
+  - package-ecosystem: 'helm'
+    directory: '/charts'
+    schedule:
+      interval: 'weekly'
+      day: 'monday'
+      time: '10:00'
+      timezone: 'America/Los_Angeles'
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: 'helm'
+      include: 'scope'
+    labels:
+      - 'dependencies'
+      - 'helm'
+      - 'automated'
+    reviewers:
+      - 'platform-lead'
+    assignees:
+      - 'devops-team'
+    allow:
+      - dependency-type: 'direct'
+    rebase-strategy: 'auto'

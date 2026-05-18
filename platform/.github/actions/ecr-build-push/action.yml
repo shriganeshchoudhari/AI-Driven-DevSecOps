@@ -1,0 +1,180 @@
+name: 'ECR Build and Push'
+description: 'Build, scan, sign, and push container image to Amazon ECR with full supply chain security'
+inputs:
+  service:
+    description: 'Service name (maps to microservices/<service> directory)'
+    required: true
+  ecr-registry:
+    description: 'Amazon ECR registry URL (e.g., <account>.dkr.ecr.<region>.amazonaws.com)'
+    required: true
+  tags:
+    description: 'Image tags (comma-separated, e.g., service:latest,service:v1.0.0)'
+    required: true
+  dockerfile:
+    description: 'Dockerfile path relative to service directory'
+    required: false
+    default: 'Dockerfile'
+  build-args:
+    description: 'Build arguments as comma-separated KEY=VALUE pairs'
+    required: false
+    default: ''
+  target:
+    description: 'Multi-stage build target'
+    required: false
+    default: ''
+  platforms:
+    description: 'Target platforms for multi-arch (e.g., linux/amd64,linux/arm64)'
+    required: false
+    default: 'linux/amd64'
+  trivy-severity:
+    description: 'Severity threshold for Trivy scan'
+    required: false
+    default: 'CRITICAL,HIGH'
+  fail-on-trivy:
+    description: 'Fail workflow on Trivy findings (true/false)'
+    required: false
+    default: 'true'
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Docker Buildx with QEMU for multi-architecture builds
+      uses: docker/setup-buildx-action@v3
+      with:
+        version: latest
+        driver-opts: |
+          image=moby/buildkit:latest
+          network=host
+
+    - name: Setup QEMU for cross-platform emulation
+      uses: docker/setup-qemu-action@v3
+      with:
+        platforms: arm64,amd64
+
+    - name: Log in to Amazon ECR via OIDC
+      shell: bash
+      run: |
+        aws ecr get-login-password --region ${{ inputs.aws-region }} | \
+          docker login --username AWS --password-stdin ${{ inputs.ecr-registry }}
+
+    - name: Extract Docker metadata (labels, tags)
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ inputs.ecr-registry }}/${{ inputs.service }}
+        tags: |
+          type=raw,value=latest
+          type=sha,prefix={{branch}}-,format=short
+          type=semver,pattern={{version}}
+          type=raw,value=${{ inputs.tags }}
+        labels: |
+          org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          org.opencontainers.image.revision=${{ github.sha }}
+          org.opencontainers.image.created=${{ steps.meta.outputs.created }}
+          aiops.platform.service=${{ inputs.service }}
+          aiops.platform.branch=${{ github.ref_name }}
+
+    - name: Build and push Docker image with provenance and SBOM
+      id: build
+      uses: docker/build-push-action@v5
+      with:
+        context: ./microservices/${{ inputs.service }}
+        file: ./microservices/${{ inputs.service }}/${{ inputs.dockerfile }}
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        platforms: ${{ inputs.platforms }}
+        build-args: ${{ inputs.build-args }}
+        target: ${{ inputs.target }}
+        cache-from: type=gha,scope=${{ inputs.service }}
+        cache-to: type=gha,scope=${{ inputs.service }},mode=max
+        provenance: mode=max
+        sbom: true
+        outputs: type=image,push-by-digest=true,name=fdw32
+
+    - name: Generate SPDX SBOM via Syft
+      id: syft
+      uses: anchore/sbom-action@v0
+      with:
+        image: ${{ steps.meta.outputs.tags }}
+        format: spdx-json
+        output-file: ${{ runner.temp }}/sbom/${{ inputs.service }}-sbom.spdx.json
+        artifact-name: ${{ inputs.service }}-sbom-spdx
+
+    - name: Generate CycloneDX SBOM via Syft
+      uses: anchore/sbom-action@v0
+      with:
+        image: ${{ steps.meta.outputs.tags }}
+        format: cyclonedx-json
+        output-file: ${{ runner.temp }}/sbom/${{ inputs.service }}-sbom.cyclonedx.json
+        artifact-name: ${{ inputs.service }}-sbom-cyclonedx
+
+    - name: Scan container image with Trivy (SARIF output)
+      id: trivy
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: ${{ steps.meta.outputs.tags }}
+        format: sarif
+        output: ${{ runner.temp }}/trivy/${{ inputs.service }}-trivy-results.sarif
+        severity: ${{ inputs.trivy-severity }}
+        exit-code: ${{ inputs.fail-on-trivy == 'true' && 1 || 0 }}
+        ignore-unfixed: true
+        vuln-type: os,library
+        scanners: vuln,secret
+
+    - name: Sign container image with Cosign keyless signing via OIDC
+      shell: bash
+      env:
+        COSIGN_EXPERIMENTAL: "1"
+        COSIGN_OIDC_ISSUER: "https://token.actions.githubusercontent.com"
+        COSIGN_OIDC_PROVIDER_ID: "https://token.actions.githubusercontent.com"
+      run: |
+        cosign sign --yes \
+          --oidc-issuer "https://token.actions.githubusercontent.com" \
+          --oidc-provider-id "https://token.actions.githubusercontent.com" \
+          --tlog-upload=true \
+          "${{ steps.meta.outputs.tags }}"
+
+    - name: Attach SPDX SBOM as in-toto attestation
+      shell: bash
+      env:
+        COSIGN_EXPERIMENTAL: "1"
+      run: |
+        cosign attest --yes \
+          --predicate ${{ runner.temp }}/sbom/${{ inputs.service }}-sbom.spdx.json \
+          --type spdx \
+          --tlog-upload=true \
+          "${{ steps.meta.outputs.tags }}"
+
+    - name: Attach CycloneDX SBOM as in-toto attestation
+      shell: bash
+      env:
+        COSIGN_EXPERIMENTAL: "1"
+      run: |
+        cosign attest --yes \
+          --predicate ${{ runner.temp }}/sbom/${{ inputs.service }}-sbom.cyclonedx.json \
+          --type cyclonedx \
+          --tlog-upload=true \
+          "${{ steps.meta.outputs.tags }}"
+
+    - name: Upload Trivy SARIF results to GitHub Security tab
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ runner.temp }}/trivy/${{ inputs.service }}-trivy-results.sarif
+        category: trivy-container-${{ inputs.service }}
+        checkout_path: ${{ github.workspace }}
+
+    - name: Upload SBOM and attestation artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.service }}-sbom-attestation
+        path: |
+          ${{ runner.temp }}/sbom/${{ inputs.service }}-sbom.spdx.json
+          ${{ runner.temp }}/sbom/${{ inputs.service }}-sbom.cyclonedx.json
+        retention-days: 90
+
+    - name: Upload image digest for downstream workflows
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.service }}-image-digest
+        path: ${{ runner.temp }}/image-digest.txt
+        retention-days: 30

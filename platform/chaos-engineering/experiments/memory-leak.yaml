@@ -1,0 +1,19 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: StressChaos
+metadata:
+  name: memory-stress-notification
+  namespace: chaos-engineering
+spec:
+  mode: one
+  selector:
+    namespaces:
+      - notification-service
+    labelSelectors:
+      app: notification-service
+  stressors:
+    memory:
+      workers: 1
+      size: "512MB"
+  duration: "120s"
+  scheduler:
+    cron: "@every 96h"

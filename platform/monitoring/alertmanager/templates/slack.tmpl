@@ -1,0 +1,85 @@
+{{ define "slack.title" }}
+  [{{ .Status | toUpper }}{{ if eq .Status "firing" }}:{{ .Alerts.Firing | len }}{{ end }}]
+  {{ .GroupLabels.alertname }}
+  {{ if .GroupLabels.service }}- {{ .GroupLabels.service }}{{ end }}
+{{ end }}
+
+{{ define "slack.text" }}
+{{ if eq .Status "firing" }}
+*Alert Details*
+• *Alert:* {{ .GroupLabels.alertname }}
+{{ if .GroupLabels.service }}• *Service:* {{ .GroupLabels.service }}{{ end }}
+{{ if .GroupLabels.namespace }}• *Namespace:* {{ .GroupLabels.namespace }}{{ end }}
+{{ if .GroupLabels.node }}• *Node:* {{ .GroupLabels.node }}{{ end }}
+{{ if .GroupLabels.pod }}• *Pod:* {{ .GroupLabels.pod }}{{ end }}
+{{ if .GroupLabels.container }}• *Container:* {{ .GroupLabels.container }}{{ end }}
+• *Severity:* {{ .GroupLabels.severity | title }}
+• *Cluster:* {{ .ExternalLabels.cluster }}
+• *Environment:* {{ .ExternalLabels.environment }}
+
+*Annotations*
+{{ range .Alerts }}
+• *Summary:* {{ .Annotations.summary }}
+• *Description:* {{ .Annotations.description }}
+{{ if .Annotations.runbook }}• *Runbook:* {{ .Annotations.runbook }}{{ end }}
+{{ if .Annotations.dashboard }}• *Dashboard:* {{ .Annotations.dashboard }}{{ end }}
+
+*Labels*
+{{ range .Labels.SortedPairs }}{{ if ne .Name "alertname" }}• *{{ .Name }}:* {{ .Value }}
+{{ end }}{{ end }}
+{{ end }}
+
+*Active Alerts:* {{ .Alerts.Firing | len }}
+*Resolved Alerts:* {{ .Alerts.Resolved | len }}
+{{ else }}
+*Resolved*
+• *Alert:* {{ .GroupLabels.alertname }}
+{{ if .GroupLabels.service }}• *Service:* {{ .GroupLabels.service }}{{ end }}
+{{ if .GroupLabels.namespace }}• *Namespace:* {{ .GroupLabels.namespace }}{{ end }}
+{{ end }}
+{{ end }}
+
+{{ define "slack.text.short" }}
+{{ if eq .Status "firing" }}
+*Firing:* {{ .Alerts.Firing | len }}
+{{ range .Alerts }}
+• {{ .Annotations.summary }}
+{{ end }}
+{{ else }}
+*Resolved:* {{ .Alerts.Resolved | len }}
+{{ end }}
+{{ end }}
+
+{{ define "pagerduty.text" }}
+{{ range .Alerts }}
+Alert: {{ .Annotations.summary }}
+Description: {{ .Annotations.description }}
+{{ if .Annotations.runbook }}Runbook: {{ .Annotations.runbook }}{{ end }}
+Labels:
+{{ range .Labels.SortedPairs }}{{ .Name }}={{ .Value }}
+{{ end }}
+{{ end }}
+{{ end }}
+
+{{ define "silence.url" }}
+{{ .ExternalURL }}/#/silences/new?filter=%7B
+{{ if .GroupLabels.alertname }}%22alertname%22%3A%5B%22{{ .GroupLabels.alertname }}%22%5D%2C{{ end }}
+{{ if .GroupLabels.service }}%22service%22%3A%5B%22{{ .GroupLabels.service }}%22%5D%2C{{ end }}
+{{ if .GroupLabels.namespace }}%22namespace%22%3A%5B%22{{ .GroupLabels.namespace }}%22%5D%2C{{ end }}
+%22severity%22%3A%5B%22{{ .GroupLabels.severity }}%22%5D%7D
+{{ end }}
+
+{{ define "teams.text" }}
+{{ if eq .Status "firing" }}
+**Alert Firing**
+> **Alert:** {{ .GroupLabels.alertname }}
+> **Severity:** {{ .GroupLabels.severity | title }}
+> **Summary:** {{ range .Alerts }}{{ .Annotations.summary }}{{ end }}
+> **Description:** {{ range .Alerts }}{{ .Annotations.description }}{{ end }}
+{{ if .GroupLabels.service }}> **Service:** {{ .GroupLabels.service }}{{ end }}
+{{ if .GroupLabels.namespace }}> **Namespace:** {{ .GroupLabels.namespace }}{{ end }}
+{{ else }}
+**Alert Resolved**
+> **Alert:** {{ .GroupLabels.alertname }}
+{{ end }}
+{{ end }}

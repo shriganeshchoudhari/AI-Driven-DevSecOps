@@ -1,0 +1,298 @@
+---
+# =============================================================================
+# Falcosidekick Configuration
+# Forwards Falco alerts to multiple destinations: AIOps engine, Slack,
+# PagerDuty, AWS Lambda/SQS, Elasticsearch, Loki, and Prometheus
+# =============================================================================
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: falcosidekick-config
+  namespace: falco
+  labels:
+    app: falcosidekick
+    cyber-secure: "true"
+data:
+  config.yaml: |
+    # Falcosidekick Global Configuration
+    listenport: 2801
+    debug: false
+    mutualtls: false
+    checkpair: false
+    customfields:
+      source: falco
+      environment: prod
+      cluster: eks-production-us-west-2
+      team: platform-security
+    node: falcosidekick
+
+    # =========================================================================
+    # Output Configuration
+    # =========================================================================
+
+    # Webhook - Primary: AIOps Engine
+    webhook:
+      address: http://aiops-engine.aiops-engine:8080/api/v1/security/alerts
+      customHeaders:
+        X-API-Key: "${AIOPS_API_KEY}"
+        X-Source: falco
+        X-Environment: production
+        Content-Type: application/json
+      minimumpriority: "notice"
+      mutualtls: false
+      checkcert: true
+
+    # Slack - Alerts to #security-alerts channel
+    slack:
+      webhookurl: "${SLACK_WEBHOOK}"
+      icon: ":falco:"
+      username: "Falco Security"
+      minimumpriority: "warning"
+      footer: "Falco Security Monitoring"
+      slackchannel: "#security-alerts"
+
+    # PagerDuty - Critical alerts only
+    pagerduty:
+      routingkey: "${PAGERDUTY_KEY}"
+      minimumpriority: "critical"
+      region: us
+
+    # AWS Integration - Incident Processor Lambda & SQS
+    aws:
+      accesskeyid: ""
+      secretaccesskey: ""
+      region: us-west-2
+      lambda:
+        functionname: "aiops-incident-processor"
+        minimumpriority: "warning"
+        invocationtype: RequestResponse
+      sqs:
+        url: "https://sqs.us-west-2.amazonaws.com/123456789012/aiops-alerts"
+        minimumpriority: "notice"
+        delay: 0
+      sns:
+        topicarn: "arn:aws:sns:us-west-2:123456789012:falco-alerts"
+        minimumpriority: "critical"
+
+    # Elasticsearch - Long-term storage and analytics
+    elasticsearch:
+      hostport: "http://elasticsearch-master.logging:9200"
+      index: "falco-events"
+      indexformat: "falco-events-2006-01-02"
+      minimumpriority: "notice"
+      suffix: daily
+      type: falco-alert
+      mutualtls: false
+      username: ""
+      password: ""
+
+    # Loki - Real-time log aggregation with Grafana
+    loki:
+      hostport: "http://loki.monitoring:3100"
+      minimumpriority: "notice"
+      tenant: ""
+      extracustomlabels: "source=falco,environment=prod"
+    loki_webhook:
+      hostport: ""
+      minimumpriority: "notice"
+      tenant: ""
+      checkcert: false
+
+    # Prometheus - Metrics for alert dashboards
+    prometheus:
+      address: "0.0.0.0:8080"
+      minimumpriority: "debug"
+      path: /metrics
+      prefix: falco_
+      buckets: [0.1, 0.5, 1, 2, 5, 10, 30, 60]
+
+    # SMTP - Email alerts (optional)
+    smtp:
+      hostport: ""
+      user: ""
+      password: ""
+      from: "falco@platform.example.com"
+      to: "security-team@platform.example.com"
+      minimumpriority: "critical"
+
+    # =========================================================================
+    # Filtering
+    # =========================================================================
+    filters:
+      - name: exclude-falco-spam
+        expression: "rule != 'Unexpected Outbound Connection to Internet' || priority == 'CRITICAL'"
+      - name: dedup-critical
+        expression: "priority == 'CRITICAL'"
+        dedup:
+          interval: 5m
+
+    # =========================================================================
+    # Alert Correlation
+    # =========================================================================
+    alertmanager:
+      hostport: ""
+      minimumpriority: "warning"
+      mutualtls: false
+---
+# =============================================================================
+# Falcosidekick Deployment
+# =============================================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: falcosidekick
+  namespace: falco
+  labels:
+    app: falcosidekick
+    cyber-secure: "true"
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: falcosidekick
+  template:
+    metadata:
+      labels:
+        app: falcosidekick
+        cyber-secure: "true"
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      serviceAccountName: falco
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: falcosidekick
+          image: 123456789012.dkr.ecr.us-west-2.amazonaws.com/falcosecurity/falcosidekick:2.28.0
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          args:
+            - -config-file=/etc/falcosidekick/config.yaml
+          env:
+            - name: SLACK_WEBHOOK
+              valueFrom:
+                secretKeyRef:
+                  name: falco-notification-secrets
+                  key: slack_webhook
+            - name: PAGERDUTY_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: falco-notification-secrets
+                  key: pagerduty_key
+            - name: AIOPS_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: falco-notification-secrets
+                  key: aiops_api_key
+            - name: TZ
+              value: UTC
+            - name: LOG_LEVEL
+              value: info
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/falcosidekick
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 2801
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 2801
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+      volumes:
+        - name: config
+          configMap:
+            name: falcosidekick-config
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - falcosidekick
+                topologyKey: kubernetes.io/hostname
+---
+# =============================================================================
+# Falcosidekick Service
+# =============================================================================
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: falcosidekick
+  namespace: falco
+  labels:
+    app: falcosidekick
+    cyber-secure: "true"
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+spec:
+  selector:
+    app: falcosidekick
+  ports:
+    - name: falco-events
+      port: 2801
+      targetPort: 2801
+      protocol: TCP
+    - name: metrics
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+---
+# =============================================================================
+# Notification Secrets for Falcosidekick (referenced from ExternalSecret)
+# =============================================================================
+
+apiVersion: v1
+kind: Secret
+metadata:
+  name: falco-notification-secrets
+  namespace: falco
+  labels:
+    app: falcosidekick
+    cyber-secure: "true"
+  annotations:
+    cyber-secure/source: "helm-generated"
+type: Opaque
+stringData:
+  slack_webhook: "REPLACE_ME_SECRET"
+  pagerduty_key: "REPLACE_ME_SECRET"
+  aiops_api_key: "REPLACE_ME_SECRET"

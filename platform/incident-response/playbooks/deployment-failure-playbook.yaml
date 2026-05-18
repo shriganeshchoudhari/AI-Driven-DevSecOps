@@ -1,0 +1,65 @@
+name: Deployment Failure Response Playbook
+version: "1.0"
+owner: Platform Engineering
+review_frequency: bi-weekly
+
+detection:
+  metrics:
+    - "ArgoCD sync status != Synced"
+    - "High error rate (>1%) on new revision"
+    - "P99 latency increase > 50% compared to previous revision"
+    - "Pod crash count > 3 in 5 minutes"
+  alerts:
+    - "ArgoCDSyncFailed"
+    - "HighErrorRate"
+    - "HighLatencyP99"
+    - "KubernetesPodCrashLooping"
+
+severity_assessment:
+  criteria:
+    - condition: "error_rate > 5% OR service_down"
+      severity: "SEV1"
+    - condition: "error_rate > 1% OR latency_p99 > 1s"
+      severity: "SEV2"
+    - condition: "crash_loop OR sync_failed"
+      severity: "SEV3"
+
+immediate_actions:
+  - action: "Rollback to previous stable revision"
+    command: "kubectl rollout undo deployment/{name} -n {namespace}"
+    alternative: "argocd app rollback {app-name} --prune"
+    timeout: "120s"
+  - action: "Verify health of previous revision"
+    command: |
+      kubectl rollout status deployment/{name} -n {namespace} --timeout=120s
+      kubectl get pods -n {namespace} -l app={name}
+  - action: "Notify team in Slack"
+    channel: "#deployments"
+
+investigation:
+  - "Check deployment diff: argocd app diff {app-name}"
+  - "Review pod logs for errors: kubectl logs -n {namespace} -l app={name} --tail=100"
+  - "Check resource utilization during deploy window"
+  - "Verify configuration changes in Git diff"
+  - "Check recent changes to dependencies"
+
+remediation:
+  - "Fix identified issues in code or configuration"
+  - "Run complete CI pipeline with security scans before re-deploy"
+  - "Deploy to staging environment first"
+  - "Use canary deployment with analysis for production"
+  - "Document root cause in deployment postmortem"
+
+postmortem:
+  required: true
+  template: |
+    ## Deployment Failure Postmortem
+    - Date: {date}
+    - Service: {service}
+    - Revision: {failed_revision}
+    - Previous Revision: {stable_revision}
+    - Root Cause: {root_cause}
+    - Detection Method: {detection}
+    - Time to Detection: {ttd}
+    - Time to Mitigation: {ttm}
+    - Action Items: {items}

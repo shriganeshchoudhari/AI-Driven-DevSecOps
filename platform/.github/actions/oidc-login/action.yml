@@ -1,0 +1,44 @@
+name: 'OIDC Login to AWS'
+description: 'Authenticate to AWS using GitHub OIDC for secure temporary credentials'
+inputs:
+  aws-region:
+    description: 'AWS region to authenticate against'
+    required: true
+    default: 'us-west-2'
+  role-arn:
+    description: 'IAM role ARN to assume via OIDC federation'
+    required: true
+  role-session-name:
+    description: 'Session name for role assumption'
+    required: false
+    default: 'GitHubActions-OIDC-Session'
+  role-duration-seconds:
+    description: 'Duration in seconds for the role session (min 900, max 43200)'
+    required: false
+    default: '3600'
+runs:
+  using: 'composite'
+  steps:
+    - name: Configure AWS credentials from GitHub OIDC
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ inputs.role-arn }}
+        aws-region: ${{ inputs.aws-region }}
+        role-session-name: ${{ inputs.role-session-name }}
+        role-duration-seconds: ${{ inputs.role-duration-seconds }}
+        mask-aws-account-id: true
+
+    - name: Verify authenticated identity
+      shell: bash
+      run: |
+        echo "::group::AWS Identity Verification"
+        aws sts get-caller-identity --query 'Arn' --output text
+        echo "::endgroup::"
+
+    - name: Validate ECR token refresh
+      shell: bash
+      run: |
+        echo "::group::ECR Token Validation"
+        aws ecr get-login-password --region ${{ inputs.aws-region }} | head -c 20
+        echo "... (token received successfully)"
+        echo "::endgroup::"

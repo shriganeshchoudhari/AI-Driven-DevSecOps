@@ -1,0 +1,109 @@
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus-operated.monitoring:9090
+    isDefault: true
+    editable: true
+    uid: prometheus
+    jsonData:
+      timeInterval: 15s
+      queryTimeout: 60s
+      httpMethod: POST
+      manageAlerts: true
+      alertmanagerUid: alertmanager
+      alertsLimit: 100
+      prometheusType: Prometheus
+      prometheusVersion: 2.50.0
+      exemplarTraceIdDestinations:
+        - name: trace_id
+          datasourceUid: tempo
+        - name: traceID
+          datasourceUid: tempo
+
+  - name: Loki
+    type: loki
+    access: proxy
+    url: http://loki.monitoring:3100
+    editable: true
+    uid: loki
+    jsonData:
+      timeout: 60
+      maxLines: 1000
+      derivedFields:
+        - name: trace_id
+          type: string
+          matcherRegex: "(?:trace[_-]?[iI][dD]|trace_id|traceID)[\": ]*([a-fA-F0-9]{16,32})"
+          url: ""
+          datasourceUid: tempo
+          urlDisplayLabel: "View Trace in Tempo"
+
+  - name: Tempo
+    type: tempo
+    access: proxy
+    url: http://tempo.monitoring:3200
+    editable: true
+    uid: tempo
+    jsonData:
+      nodeGraph:
+        enabled: true
+      search:
+        hide: false
+      tracesToLogs:
+        datasourceUid: loki
+        tags:
+          - instance
+          - pod
+          - namespace
+          - host
+          - container
+        mappedTags:
+          - key: service.name
+            value: service
+          - key: service.namespace
+            value: namespace
+        mapTagNamesEnabled: true
+        spanStartTimeShift: -1h
+        spanEndTimeShift: 1h
+        filterByTraceID: true
+        filterBySpanID: false
+      tracesToMetrics:
+        datasourceUid: prometheus
+        tags:
+          - key: service.name
+            value: service
+          - key: service.namespace
+            value: namespace
+        queries:
+          - name: "Request Rate"
+            query: "rate(http_requests_total{service=\"$service\"}[5m])"
+          - name: "Error Rate"
+            query: "rate(http_requests_total{service=\"$service\", status=~\"5..\"}[5m]) / rate(http_requests_total{service=\"$service\"}[5m]) * 100"
+      serviceMap:
+        datasourceUid: prometheus
+      spanBar:
+        type: "tag"
+        tag: "http.route"
+
+  - name: Alertmanager
+    type: alertmanager
+    access: proxy
+    url: http://alertmanager.monitoring:9093
+    editable: true
+    uid: alertmanager
+    jsonData:
+      handleGrafanaManagedAlerts: false
+      implementation: prometheus
+      enableAlertManagerV2: true
+
+  - name: Jaeger
+    type: jaeger
+    access: proxy
+    url: http://tempo.monitoring:16686
+    editable: true
+    uid: jaeger
+    jsonData:
+      nodeGraph:
+        enabled: true

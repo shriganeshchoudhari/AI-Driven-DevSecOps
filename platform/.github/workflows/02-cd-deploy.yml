@@ -1,0 +1,485 @@
+name: 02 - CD Deploy to Environments
+
+on:
+  workflow_run:
+    workflows: ['01 - CI Build, Scan, and Sign']
+    types:
+      - completed
+  workflow_dispatch:
+    inputs:
+      service:
+        description: 'Service to deploy'
+        required: true
+        type: choice
+        options:
+          - frontend-service
+          - auth-service
+          - payment-service
+          - notification-service
+          - all
+      environment:
+        description: 'Target environment'
+        required: true
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+      tag:
+        description: 'Image tag to deploy (commit SHA)'
+        required: true
+        type: string
+      auto-approve:
+        description: 'Auto-approve deployment (skip manual gates)'
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: cd-${{ github.event.inputs.environment || 'dev' }}-${{ github.event.inputs.service || 'all' }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-west-2
+  AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-west-2.amazonaws.com
+  ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
+  ARGOCD_USERNAME: ${{ secrets.ARGOCD_USERNAME }}
+  SLACK_WEBHOOK: ${{ secrets.SLACK_CD_WEBHOOK }}
+  GITOPS_REPO: ${{ vars.GITOPS_REPO || 'org/gitops-config' }}
+
+permissions:
+  id-token: write
+  contents: write
+  pull-requests: write
+  deployments: write
+  security-events: read
+  actions: read
+  checks: write
+  statuses: write
+
+jobs:
+  resolve-parameters:
+    name: Resolve Deployment Parameters
+    runs-on: ubuntu-latest
+    outputs:
+      services: ${{ steps.resolve.outputs.services }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      environment: ${{ steps.resolve.outputs.environment }}
+      gitops-branch: ${{ steps.resolve.outputs.gitops-branch }}
+      skip: ${{ steps.resolve.outputs.skip }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Resolve parameters from workflow_run or dispatch
+        id: resolve
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            echo "Triggered by CI workflow run #${{ github.event.workflow_run.id }}"
+            echo "CI conclusion: ${{ github.event.workflow_run.conclusion }}"
+
+            if [ "${{ github.event.workflow_run.conclusion }}" != "success" ]; then
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              echo "CI workflow did not succeed, skipping deployment"
+              exit 0
+            fi
+
+            echo "services=frontend-service,auth-service,payment-service,notification-service" >> "$GITHUB_OUTPUT"
+            echo "tag=${{ github.event.workflow_run.head_sha }}" >> "$GITHUB_OUTPUT"
+            echo "environment=dev" >> "$GITHUB_OUTPUT"
+            echo "gitops-branch=main" >> "$GITHUB_OUTPUT"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Triggered by workflow_dispatch"
+            echo "services=${{ inputs.service }}" >> "$GITHUB_OUTPUT"
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+            echo "environment=${{ inputs.environment }}" >> "$GITHUB_OUTPUT"
+            echo "gitops-branch=${{ inputs.environment }}" >> "$GITHUB_OUTPUT"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  deploy-to-dev:
+    name: Deploy to Dev
+    needs: resolve-parameters
+    if: needs.resolve-parameters.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    environment: dev
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - frontend-service
+          - auth-service
+          - payment-service
+          - notification-service
+    env:
+      DEPLOY_ID: deploy-dev-${{ github.run_id }}-${{ matrix.service }}
+    steps:
+      - name: Checkout platform repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Authenticate to AWS via OIDC
+        uses: ./.github/actions/oidc-login
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-arn: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/github-actions-oidc-deploy-role
+          role-session-name: CD-Deploy-dev-${{ matrix.service }}
+
+      - name: Create GitHub Deployment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.repos.createDeployment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: context.sha,
+              environment: 'dev',
+              auto_merge: false,
+              required_contexts: [],
+              description: 'Deploy ${{ matrix.service }} to dev at ${{ needs.resolve-parameters.outputs.tag }}'
+            });
+
+      - name: Deploy via GitOps to dev
+        uses: ./.github/actions/deploy-gitops
+        with:
+          service: ${{ matrix.service }}
+          environment: dev
+          tag: ${{ needs.resolve-parameters.outputs.tag }}
+          image-registry: ${{ env.ECR_REGISTRY }}
+          gitops-repo: ${{ env.GITOPS_REPO }}
+          gitops-branch: main
+          argocd-server: ${{ secrets.ARGOCD_SERVER }}
+          argocd-username: ${{ secrets.ARGOCD_USERNAME }}
+          argocd-password: ${{ secrets.ARGOCD_PASSWORD }}
+          health-check-timeout: 300
+
+      - name: Run smoke tests against dev
+        id: smoke-tests
+        shell: bash
+        run: |
+          echo "Running smoke tests for ${{ matrix.service }} in dev..."
+          BASE_URL="https://${{ matrix.service }}.dev.aiops.internal"
+
+          SMOKE_ENDPOINTS=("/healthz" "/readyz" "/metrics")
+          ALL_PASSED=true
+
+          for endpoint in "${SMOKE_ENDPOINTS[@]}"; do
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$BASE_URL$endpoint")
+            if [ "$HTTP_STATUS" = "200" ] || [ "$HTTP_STATUS" = "204" ]; then
+              echo "::notice::SMOKE OK: $endpoint returned $HTTP_STATUS"
+            else
+              echo "::error::SMOKE FAIL: $endpoint returned $HTTP_STATUS"
+              ALL_PASSED=false
+            fi
+          done
+
+          if [ "$ALL_PASSED" = false ]; then
+            echo "::error::Smoke tests failed for ${{ matrix.service }} in dev"
+            exit 1
+          fi
+          echo "::notice::All smoke tests passed for ${{ matrix.service }}"
+
+      - name: Run integration tests against dev
+        id: integration-tests
+        shell: bash
+        env:
+          SERVICE_DIR: ./tests/integration/${{ matrix.service }}
+        run: |
+          if [ -d "$SERVICE_DIR" ]; then
+            if [ -f "$SERVICE_DIR/run.sh" ]; then
+              chmod +x "$SERVICE_DIR/run.sh"
+              "$SERVICE_DIR/run.sh" \
+                --environment dev \
+                --tag ${{ needs.resolve-parameters.outputs.tag }} \
+                --api-base "https://${{ matrix.service }}.dev.aiops.internal"
+            elif [ -f "$SERVICE_DIR/Makefile" ]; then
+              make -C "$SERVICE_DIR" test \
+                ENVIRONMENT=dev \
+                SERVICE=${{ matrix.service }}
+            else
+              echo "No integration test runner found, skipping"
+            fi
+          else
+            echo "Integration test directory not found, skipping"
+          fi
+
+      - name: Update deployment status in GitHub
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const state = '${{ job.status }}' === 'success' ? 'success' : 'failure';
+            await github.rest.repos.createDeploymentStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              deployment_id: context.payload.deployment && context.payload.deployment.id,
+              state: state,
+              log_url: '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}',
+              description: 'Deploy ${{ matrix.service }} to dev: ' + state,
+              environment: 'dev'
+            });
+
+      - name: Notify Slack with deployment details
+        if: always()
+        uses: slackapi/slack-github-action@v1
+        with:
+          payload: |
+            {
+              "channel": "#cd-deployments",
+              "username": "CD Bot",
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": {
+                    "type": "plain_text",
+                    "text": "${{ job.status == 'success' && ':rocket:' || ':x:' }} Dev Deploy ${{ job.status == 'success' && 'Succeeded' || 'Failed' }}"
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    { "type": "mrkdwn", "text": "*Service:*\n${{ matrix.service }}" },
+                    { "type": "mrkdwn", "text": "*Tag:*\n`${{ needs.resolve-parameters.outputs.tag }}`" },
+                    { "type": "mrkdwn", "text": "*Status:*\n${{ job.status }}" },
+                    { "type": "mrkdwn", "text": "*Run:*\n${{ github.run_id }}" }
+                  ]
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ env.SLACK_WEBHOOK }}
+
+  promote-to-staging:
+    name: Promote to Staging
+    needs:
+      - deploy-to-dev
+      - resolve-parameters
+    runs-on: ubuntu-latest
+    if: success()
+    environment: staging
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Manual approval gate
+        uses: trstringer/manual-approval@v1
+        with:
+          secret: ${{ secrets.STAGING_APPROVAL_TOKEN }}
+          approvers: ${{ vars.STAGING_APPROVERS || 'platform-lead,senior-devops' }}
+          minimum-approvals: 1
+          issue-title: "Approve staging promotion: ${{ needs.resolve-parameters.outputs.tag }}"
+          issue-body: |
+            Please approve the deployment to staging.
+            - Tag: ${{ needs.resolve-parameters.outputs.tag }}
+            - Services: ${{ needs.resolve-parameters.outputs.services }}
+            - Commit: ${{ github.sha }}
+          exclude-workflow-initiator-as-approver: false
+
+      - name: Authenticate to AWS via OIDC
+        uses: ./.github/actions/oidc-login
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-arn: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/github-actions-oidc-deploy-role
+          role-session-name: CD-Deploy-staging
+
+      - name: Deploy all services to staging
+        uses: ./.github/actions/deploy-gitops
+        with:
+          service: all
+          environment: staging
+          tag: ${{ needs.resolve-parameters.outputs.tag }}
+          image-registry: ${{ env.ECR_REGISTRY }}
+          gitops-repo: ${{ env.GITOPS_REPO }}
+          gitops-branch: staging
+          argocd-server: ${{ secrets.ARGOCD_SERVER }}
+          argocd-username: ${{ secrets.ARGOCD_USERNAME }}
+          argocd-password: ${{ secrets.ARGOCD_PASSWORD }}
+          health-check-timeout: 300
+
+      - name: Run staging smoke tests
+        shell: bash
+        run: |
+          TARGETS="frontend-service auth-service payment-service notification-service"
+          ALL_OK=true
+          for svc in $TARGETS; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "https://$svc.staging.aiops.internal/healthz")
+            if [ "$STATUS" = "200" ]; then
+              echo "::notice::$svc staging health check: PASS"
+            else
+              echo "::error::$svc staging health check: FAIL (HTTP $STATUS)"
+              ALL_OK=false
+            fi
+          done
+          $ALL_OK || exit 1
+
+  promote-to-prod:
+    name: Promote to Production
+    needs:
+      - promote-to-staging
+      - resolve-parameters
+    runs-on: ubuntu-latest
+    if: success()
+    environment: prod
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Manual approval gate (requires 2 approvers for prod)
+        uses: trstringer/manual-approval@v1
+        with:
+          secret: ${{ secrets.PROD_APPROVAL_TOKEN }}
+          approvers: ${{ vars.PROD_APPROVERS || 'cto,vp-engineering,platform-lead' }}
+          minimum-approvals: 2
+          issue-title: "PRODUCTION DEPLOYMENT: ${{ needs.resolve-parameters.outputs.tag }}"
+          issue-body: |
+            WARNING: Production deployment pending approval.
+            - Tag: ${{ needs.resolve-parameters.outputs.tag }}
+            - Services: ${{ needs.resolve-parameters.outputs.services }}
+            - Commit: ${{ github.sha }}
+            - CI Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          exclude-workflow-initiator-as-approver: false
+
+      - name: Authenticate to AWS via OIDC
+        uses: ./.github/actions/oidc-login
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-arn: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/github-actions-oidc-deploy-role
+          role-session-name: CD-Deploy-prod-canary
+
+      - name: Canary deploy to production (10% traffic)
+        uses: ./.github/actions/deploy-gitops
+        with:
+          service: all
+          environment: prod-canary
+          tag: ${{ needs.resolve-parameters.outputs.tag }}
+          image-registry: ${{ env.ECR_REGISTRY }}
+          gitops-repo: ${{ env.GITOPS_REPO }}
+          gitops-branch: prod-canary
+          argocd-server: ${{ secrets.ARGOCD_SERVER }}
+          argocd-username: ${{ secrets.ARGOCD_USERNAME }}
+          argocd-password: ${{ secrets.ARGOCD_PASSWORD }}
+          health-check-timeout: 300
+          deployment-type: canary
+
+      - name: Canary observation period
+        shell: bash
+        run: |
+          echo "Starting 5-minute canary observation..."
+          for i in $(seq 1 5); do
+            echo "Minute $i of 5..."
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "https://canary.aiops.internal/healthz")
+            echo "Canary health: HTTP $STATUS"
+            if [ "$STATUS" != "200" ]; then
+              echo "::error::Canary health check failed at minute $i"
+              exit 1
+            fi
+            sleep 60
+          done
+          echo "Canary observation passed. Proceeding to full rollout."
+
+      - name: Full production rollout
+        uses: ./.github/actions/deploy-gitops
+        with:
+          service: all
+          environment: prod
+          tag: ${{ needs.resolve-parameters.outputs.tag }}
+          image-registry: ${{ env.ECR_REGISTRY }}
+          gitops-repo: ${{ env.GITOPS_REPO }}
+          gitops-branch: prod
+          argocd-server: ${{ secrets.ARGOCD_SERVER }}
+          argocd-username: ${{ secrets.ARGOCD_USERNAME }}
+          argocd-password: ${{ secrets.ARGOCD_PASSWORD }}
+          health-check-timeout: 600
+          deployment-type: rolling
+
+      - name: Run production smoke tests
+        shell: bash
+        run: |
+          TARGETS="frontend-service auth-service payment-service notification-service"
+          ALL_OK=true
+          for svc in $TARGETS; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "https://$svc.prod.aiops.internal/healthz")
+            if [ "$STATUS" = "200" ]; then
+              echo "::notice::$svc prod health: PASS"
+            else
+              echo "::error::$svc prod health: FAIL (HTTP $STATUS)"
+              ALL_OK=false
+            fi
+          done
+          $ALL_OK || exit 1
+
+      - name: Run production integration tests
+        shell: bash
+        run: |
+          if [ -f "./tests/integration/prod-smoke.sh" ]; then
+            chmod +x ./tests/integration/prod-smoke.sh
+            ./tests/integration/prod-smoke.sh --environment prod
+          else
+            echo "No prod integration test script found, skipping"
+          fi
+
+  record-deployment:
+    name: Record Final Deployment Status
+    needs:
+      - promote-to-prod
+      - resolve-parameters
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Record deployment in DynamoDB
+        shell: bash
+        env:
+          DEPLOY_TABLE: ${{ vars.DEPLOY_TRACKING_TABLE || 'aiops-deployment-tracker' }}
+        run: |
+          TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          aws dynamodb put-item \
+            --table-name "$DEPLOY_TABLE" \
+            --item "{
+              \"deployId\": {\"S\": \"${{ github.run_id }}\"},
+              \"commitSha\": {\"S\": \"${{ github.sha }}\"},
+              \"service\": {\"S\": \"${{ needs.resolve-parameters.outputs.services }}\"},
+              \"environment\": {\"S\": \"prod\"},
+              \"status\": {\"S\": \"${{ job.status }}\"},
+              \"triggeredBy\": {\"S\": \"${{ github.actor }}\"},
+              \"timestamp\": {\"S\": \"$TIMESTAMP\"},
+              \"runUrl\": {\"S\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}
+            }" \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Notify final deployment status
+        uses: slackapi/slack-github-action@v1
+        with:
+          payload: |
+            {
+              "channel": "#cd-deployments",
+              "username": "CD Bot",
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": {
+                    "type": "plain_text",
+                    "text": "${{ job.status == 'success' && ':ship:' || ':fire:' }} Production ${{ job.status == 'success' && 'Complete' || 'Failed' }}"
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    { "type": "mrkdwn", "text": "*Tag:*\n`${{ needs.resolve-parameters.outputs.tag }}`" },
+                    { "type": "mrkdwn", "text": "*Status:*\n${{ job.status }}" },
+                    { "type": "mrkdwn", "text": "*Run:*\n${{ github.run_id }}" }
+                  ]
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ env.SLACK_WEBHOOK }}

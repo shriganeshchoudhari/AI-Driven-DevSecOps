@@ -1,0 +1,130 @@
+server:
+  http_listen_port: 3200
+  grpc_listen_port: 9096
+  log_level: info
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+          cors:
+            allowed_origins:
+              - "*"
+    jaeger:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:14250
+        thrift_binary:
+          endpoint: 0.0.0.0:6832
+        thrift_compact:
+          endpoint: 0.0.0.0:6831
+        thrift_http:
+          endpoint: 0.0.0.0:14268
+    zipkin:
+      endpoint: 0.0.0.0:9411
+    kafka:
+      protocol: v2
+      encoding: otlp_proto
+      ingestion_workers: 5
+      topic: tempo_ingest
+      brokers:
+        - kafka.monitoring:9092
+
+ingester:
+  max_block_duration: 30m
+  max_block_bytes: 524288000
+  trace_idle_period: 10s
+  retry_after: 30s
+  lifecycler:
+    ring:
+      kvstore:
+        store: memberlist
+      replication_factor: 1
+    heartbeat_period: 5s
+    heartbeat_timeout: 1m
+
+compactor:
+  compaction:
+    block_retention: 48h
+    compacted_block_retention: 1h
+    compaction_window: 1h
+    max_compaction_objects: 6000000
+    max_block_bytes: 1073741824
+    output_block_bytes: 536870912
+  ring:
+    kvstore:
+      store: memberlist
+
+storage:
+  trace:
+    backend: s3
+    s3:
+      bucket: aiops-platform-tempo-traces
+      endpoint: s3.us-west-2.amazonaws.com
+      region: us-west-2
+      access_key: ${AWS_ACCESS_KEY_ID}
+      secret_key: ${AWS_SECRET_ACCESS_KEY}
+      insecure: false
+    pool:
+      max_workers: 100
+      queue_depth: 1000
+    wal:
+      path: /var/tempo/wal
+      encoding: snappy
+    local:
+      path: /var/tempo/blocks
+
+querier:
+  max_concurrent_queries: 20
+  search:
+    max_duration: 6h
+    query_timeout: 30s
+  forwarder:
+    max_retries: 3
+    interval: 5s
+
+query_frontend:
+  max_retries: 3
+  search:
+    max_duration: 48h
+    query_ingesters_until: 30m
+    query_backend_after: 15m
+  trace_by_id:
+    query_shards: 2
+  metrics:
+    max_concurrent: 10
+    interval: 5m
+
+metrics_generator:
+  registry:
+    collection_interval: 15s
+    stale_duration: 15m
+    external_labels:
+      cluster: aiops-platform-prod
+  storage:
+    path: /var/tempo/generator/wal
+    remote_write:
+      - url: http://prometheus-operated.monitoring:9090/api/v1/write
+        send_exemplars: true
+
+memberlist:
+  abort_if_cluster_join_fails: false
+  bind_port: 7946
+  join_members:
+    - tempo.monitoring:7946
+
+overrides:
+  max_search_duration: 48h
+  ingestion_rate_strategy: local
+  ingestion_rate_limit_bytes: 15000000
+  ingestion_burst_size_bytes: 20000000
+  max_traces_per_user: 10000
+  metrics_generator_processors:
+    - service-graphs
+    - span-metrics
+  forwarders:
+    - loki

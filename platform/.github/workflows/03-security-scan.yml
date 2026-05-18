@@ -1,0 +1,405 @@
+name: 03 - Security Scanning
+
+on:
+  push:
+    branches: [main, develop, 'release/**']
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 6 * * 1-5'
+  workflow_dispatch:
+
+concurrency:
+  group: security-scan-${{ github.ref_name }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: us-west-2
+  AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+  SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+  SLACK_SECURITY_WEBHOOK: ${{ secrets.SLACK_SECURITY_WEBHOOK }}
+  TRIVY_SEVERITY: CRITICAL,HIGH
+  S3_SECURITY_BUCKET: ${{ vars.S3_SECURITY_BUCKET || 'aiops-security-audit' }}
+
+permissions:
+  id-token: write
+  contents: read
+  security-events: write
+  actions: read
+
+jobs:
+  gitleaks-scan:
+    name: Gitleaks Secret Scanning
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout with full git history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Gitleaks on full git history
+        uses: gitleaks/gitleaks-action@v2
+        with:
+          config-path: .gitleaks.toml
+          report-path: ${{ runner.temp }}/security/gitleaks-results.sarif
+          no-banner: true
+        continue-on-error: true
+
+      - name: Upload Gitleaks SARIF to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ${{ runner.temp }}/security/gitleaks-results.sarif
+          category: gitleaks-full-history
+          checkout_path: ${{ github.workspace }}
+        continue-on-error: true
+
+      - name: Gitleaks results summary
+        shell: bash
+        run: |
+          if [ -f "${{ runner.temp }}/security/gitleaks-results.sarif" ]; then
+            LEAKS=$(jq '.runs[0].results | length' "${{ runner.temp }}/security/gitleaks-results.sarif")
+            echo "::notice::Gitleaks found $LEAKS potential secrets in history"
+            echo "LEAKS_COUNT=$LEAKS" >> "$GITHUB_ENV"
+          else
+            echo "::notice::No Gitleaks results file found"
+            echo "LEAKS_COUNT=0" >> "$GITHUB_ENV"
+          fi
+
+  semgrep-sast:
+    name: Semgrep SAST Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Semgrep with polyglot and custom rulesets
+        uses: semgrep/semgrep-action@v1
+        with:
+          config: >-
+            p/default
+            p/security-audit
+            p/owasp-top-ten
+            p/owasp-benchmark
+            p/r2c-security-audit
+            p/github-actions
+            p/supply-chain
+            p/command-injection
+            p/secrets
+            p/frontend
+            p/backbone
+            p/python
+            p/golang
+            p/nodejs
+            p/java
+            ./semgrep-rules/
+          sarif_file: ${{ runner.temp }}/security/semgrep-results.sarif
+          output: sarif
+          audit_on: push
+          severity: ERROR,WARNING
+
+      - name: Upload Semgrep SARIF to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ${{ runner.temp }}/security/semgrep-results.sarif
+          category: semgrep-full-scan
+          checkout_path: ${{ github.workspace }}
+        continue-on-error: true
+
+      - name: Semgrep results summary
+        shell: bash
+        run: |
+          FINDINGS=$(jq '.runs[0].results | length' "${{ runner.temp }}/security/semgrep-results.sarif")
+          echo "::notice::Semgrep found $FINDINGS findings"
+          echo "SEMGREP_FINDINGS=$FINDINGS" >> "$GITHUB_ENV"
+
+  trivy-fs-scan:
+    name: Trivy Filesystem Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Trivy filesystem scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: ${{ github.workspace }}
+          format: sarif
+          output: ${{ runner.temp }}/security/trivy-fs-results.sarif
+          severity: ${{ env.TRIVY_SEVERITY }}
+          exit-code: 1
+          ignore-unfixed: true
+          scanners: vuln,secret,misconfig
+
+      - name: Upload Trivy FS SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ${{ runner.temp }}/security/trivy-fs-results.sarif
+          category: trivy-filesystem
+          checkout_path: ${{ github.workspace }}
+        continue-on-error: true
+
+  trivy-config-scan:
+    name: Trivy IaC Config Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Trivy IaC configuration scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: config
+          scan-ref: ${{ github.workspace }}
+          format: sarif
+          output: ${{ runner.temp }}/security/trivy-config-results.sarif
+          severity: ${{ env.TRIVY_SEVERITY }}
+          exit-code: 0
+          ignore-unfixed: true
+
+      - name: Upload Trivy Config SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ${{ runner.temp }}/security/trivy-config-results.sarif
+          category: trivy-iac-config
+          checkout_path: ${{ github.workspace }}
+        continue-on-error: true
+
+  checkov-scan:
+    name: Checkov IaC Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Checkov on Terraform and Kubernetes
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: ${{ github.workspace }}
+          framework: terraform,kubernetes,helm,dockerfile
+          output_format: sarif
+          output_file_path: ${{ runner.temp }}/security/checkov-results.sarif
+          soft_fail: true
+          quiet: true
+          skip_check: CKV_DOCKER_3,CKV_DOCKER_7
+
+      - name: Upload Checkov SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ${{ runner.temp }}/security/checkov-results.sarif
+          category: checkov-iac
+          checkout_path: ${{ github.workspace }}
+        continue-on-error: true
+
+  terrascan-scan:
+    name: Terrascan IaC Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Terrascan on Terraform
+        uses: tenable/terrascan-action@main
+        with:
+          iac_type: terraform
+          iac_version: v1
+          policy_type: aws
+          iac_dir: ${{ github.workspace }}/terraform
+          non_recursive: false
+          config_path: ${{ github.workspace }}/.terrascan.toml
+        continue-on-error: true
+
+      - name: Upload Terrascan results
+        uses: actions/upload-artifact@v4
+        with:
+          name: terrascan-results
+          path: ${{ runner.temp }}/terrascan-results.txt
+          retention-days: 30
+        continue-on-error: true
+
+  kube-bench-scan:
+    name: Kube-bench CIS Benchmark
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run kube-bench CIS benchmark
+        uses: aquasecurity/kube-bench-action@main
+        with:
+          version: latest
+          config: cfg/config.yaml
+          targets: master,node,etcd,policies
+          output: ${{ runner.temp }}/security/kube-bench-results.json
+        continue-on-error: true
+
+      - name: Upload kube-bench results
+        uses: actions/upload-artifact@v4
+        with:
+          name: kube-bench-results
+          path: ${{ runner.temp }}/security/kube-bench-results.json
+          retention-days: 90
+        continue-on-error: true
+
+  aggregate-and-upload:
+    name: Aggregate and Upload Results
+    needs:
+      - gitleaks-scan
+      - semgrep-sast
+      - trivy-fs-scan
+      - trivy-config-scan
+      - checkov-scan
+      - terrascan-scan
+      - kube-bench-scan
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to AWS via OIDC
+        uses: ./.github/actions/oidc-login
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-arn: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/github-actions-oidc-security-role
+          role-session-name: Security-Audit-Upload
+
+      - name: Aggregate all SARIF reports
+        shell: bash
+        run: |
+          mkdir -p ${{ runner.temp }}/aggregated
+          REPORT_TIMESTAMP=$(date -u +%Y%m%dT%H%M%SZ)
+
+          echo "Aggregating security scan results..."
+          find ${{ runner.temp }}/security -name "*.sarif" -type f | while read -r sarif; do
+            echo "Found: $sarif"
+            cp "$sarif" "${{ runner.temp }}/aggregated/"
+          done
+
+          echo "Security scan timestamp: $REPORT_TIMESTAMP"
+          echo "REPORT_TIMESTAMP=$REPORT_TIMESTAMP" >> "$GITHUB_ENV"
+
+      - name: Upload all SARIF to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ${{ runner.temp }}/aggregated
+          category: security-scan-bundle
+          checkout_path: ${{ github.workspace }}
+        continue-on-error: true
+
+      - name: Upload results to S3 for audit trail
+        shell: bash
+        run: |
+          S3_PREFIX="s3://${{ env.S3_SECURITY_BUCKET }}/scans/${{ github.repository_owner }}/${{ github.event.repository.name }}/${{ github.run_id }}/"
+          TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+          echo "Uploading security scan results to S3..."
+          aws s3 sync "${{ runner.temp }}/security/" "$S3_PREFIX" \
+            --region ${{ env.AWS_REGION }} \
+            --no-progress \
+            --content-type "application/json"
+
+          aws s3 sync "${{ runner.temp }}/aggregated/" "$S3_PREFIX/aggregated/" \
+            --region ${{ env.AWS_REGION }} \
+            --no-progress
+
+          # Write scan manifest
+          MANIFEST="${{ runner.temp }}/scan-manifest.json"
+          cat > "$MANIFEST" << JSONEOF
+          {
+            "runId": "${{ github.run_id }}",
+            "repository": "${{ github.repository }}",
+            "commitSha": "${{ github.sha }}",
+            "ref": "${{ github.ref_name }}",
+            "timestamp": "$TIMESTAMP",
+            "trigger": "${{ github.event_name }}",
+            "resultsUrl": "$S3_PREFIX"
+          }
+          JSONEOF
+
+          aws s3 cp "$MANIFEST" "$S3_PREFIX/scan-manifest.json" \
+            --region ${{ env.AWS_REGION }} \
+            --content-type "application/json"
+
+          echo "::notice::Security scan results uploaded to $S3_PREFIX"
+
+      - name: Check for critical findings
+        id: critical-check
+        shell: bash
+        run: |
+          CRITICAL_COUNT=0
+
+          # Check Trivy FS results for CRITICAL
+          if [ -f "${{ runner.temp }}/security/trivy-fs-results.sarif" ]; then
+            FS_CRITICAL=$(jq '[.runs[0].results[] | select(.properties.severity == "CRITICAL")] | length' \
+              "${{ runner.temp }}/security/trivy-fs-results.sarif")
+            CRITICAL_COUNT=$((CRITICAL_COUNT + FS_CRITICAL))
+            echo "Trivy FS critical: $FS_CRITICAL"
+          fi
+
+          # Check Semgrep results for ERROR
+          if [ -f "${{ runner.temp }}/security/semgrep-results.sarif" ]; then
+            SEMGREP_ERRORS=$(jq '[.runs[0].results[] | select(.level == "error")] | length' \
+              "${{ runner.temp }}/security/semgrep-results.sarif")
+            CRITICAL_COUNT=$((CRITICAL_COUNT + SEMGREP_ERRORS))
+            echo "Semgrep errors: $SEMGREP_ERRORS"
+          fi
+
+          echo "Total critical findings: $CRITICAL_COUNT"
+          echo "CRITICAL_COUNT=$CRITICAL_COUNT" >> "$GITHUB_ENV"
+
+          if [ "$CRITICAL_COUNT" -gt 0 ]; then
+            echo "::error::Found $CRITICAL_COUNT critical security findings!"
+            exit 1
+          fi
+          echo "::notice::No critical findings. All scans passed."
+
+      - name: Notify Security Slack Channel
+        if: always()
+        uses: slackapi/slack-github-action@v1
+        with:
+          payload: |
+            {
+              "channel": "#security-alerts",
+              "username": "Security Scanner",
+              "icon_emoji": ":shield:",
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": {
+                    "type": "plain_text",
+                    "text": "${{ job.status == 'success' && ':white_check_mark:' || ':warning:' }} Security Scan ${{ job.status == 'success' && 'Passed' || 'Found Issues' }}"
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    { "type": "mrkdwn", "text": "*Repository:*\n${{ github.repository }}" },
+                    { "type": "mrkdwn", "text": "*Branch:*\n${{ github.ref_name }}" },
+                    { "type": "mrkdwn", "text": "*Trigger:*\n${{ github.event_name }}" },
+                    { "type": "mrkdwn", "text": "*Critical Count:*\n${{ env.CRITICAL_COUNT || 0 }}" }
+                  ]
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Scan Types:*\n:key: Gitleaks | :mag: Semgrep | :ship: Trivy FS | :building_construction: Trivy Config | :cloud: Checkov | :terraform: Terrascan | :kubernetes: Kube-bench"
+                  }
+                },
+                {
+                  "type": "actions",
+                  "elements": [
+                    {
+                      "type": "button",
+                      "text": { "type": "plain_text", "text": "View Security Scan" },
+                      "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                    },
+                    {
+                      "type": "button",
+                      "text": { "type": "plain_text", "text": "Security Tab" },
+                      "url": "${{ github.server_url }}/${{ github.repository }}/security/code-scanning"
+                    }
+                  ]
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ env.SLACK_SECURITY_WEBHOOK }}

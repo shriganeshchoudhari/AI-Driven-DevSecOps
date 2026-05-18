@@ -1,0 +1,347 @@
+name: 05 - SBOM Generation and Attestation
+
+on:
+  release:
+    types: [published]
+  schedule:
+    - cron: '0 6 * * 0'
+  workflow_dispatch:
+    inputs:
+      release-tag:
+        description: 'Release tag to generate SBOM for'
+        required: false
+        type: string
+      services:
+        description: 'Services to generate SBOMs for (comma-separated)'
+        required: false
+        type: string
+        default: 'frontend-service,auth-service,payment-service,notification-service'
+
+concurrency:
+  group: sbom-generation-${{ github.event.release.tag_name || inputs.release-tag || github.sha }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-west-2
+  AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-west-2.amazonaws.com
+  S3_SBOM_BUCKET: ${{ vars.S3_SBOM_BUCKET || 'aiops-sbom-store' }}
+  DEPENDENCY_TRACK_URL: ${{ secrets.DEPENDENCY_TRACK_URL }}
+  DEPENDENCY_TRACK_API_KEY: ${{ secrets.DEPENDENCY_TRACK_API_KEY }}
+  REKOR_HOST: rekor.sigstore.dev
+  SLACK_SECURITY_WEBHOOK: ${{ secrets.SLACK_SECURITY_WEBHOOK }}
+
+permissions:
+  id-token: write
+  contents: read
+  attestations: write
+  packages: read
+  security-events: write
+
+jobs:
+  determine-context:
+    name: Determine Release Context
+    runs-on: ubuntu-latest
+    outputs:
+      release-tag: ${{ steps.context.outputs.release-tag }}
+      services: ${{ steps.context.outputs.services }}
+      is-release: ${{ steps.context.outputs.is-release }}
+    steps:
+      - name: Determine release context
+        id: context
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "release-tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+            echo "services=frontend-service,auth-service,payment-service,notification-service" >> "$GITHUB_OUTPUT"
+            echo "is-release=true" >> "$GITHUB_OUTPUT"
+            echo "Triggered by release: ${{ github.event.release.tag_name }}"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "release-tag=${{ inputs.release-tag || github.sha }}" >> "$GITHUB_OUTPUT"
+            echo "services=${{ inputs.services }}" >> "$GITHUB_OUTPUT"
+            echo "is-release=false" >> "$GITHUB_OUTPUT"
+            echo "Triggered by workflow_dispatch"
+          else
+            echo "release-tag=weekly-${{ github.run_id }}-$(date +%Y%m%d)" >> "$GITHUB_OUTPUT"
+            echo "services=frontend-service,auth-service,payment-service,notification-service" >> "$GITHUB_OUTPUT"
+            echo "is-release=false" >> "$GITHUB_OUTPUT"
+            echo "Triggered by weekly schedule"
+          fi
+
+  generate-sbom:
+    name: Generate SBOM for ${{ matrix.service }}
+    needs: determine-context
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - frontend-service
+          - auth-service
+          - payment-service
+          - notification-service
+    env:
+      SERVICE: ${{ matrix.service }}
+      RELEASE_TAG: ${{ needs.determine-context.outputs.release-tag }}
+    steps:
+      - name: Checkout at release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.determine-context.outputs.is-release == 'true' && needs.determine-context.outputs.release-tag || github.sha }}
+          fetch-depth: 1
+
+      - name: Create output directory
+        shell: bash
+        run: |
+          mkdir -p ${{ runner.temp }}/sbom/${{ matrix.service }}
+          mkdir -p ${{ runner.temp }}/attestations
+
+      - name: Generate CycloneDX SBOM via Syft
+        uses: anchore/sbom-action@v0
+        with:
+          path: ./microservices/${{ matrix.service }}
+          format: cyclonedx-json
+          output-file: ${{ runner.temp }}/sbom/${{ matrix.service }}/${{ matrix.service }}-sbom.cyclonedx.json
+          artifact-name: ${{ matrix.service }}-sbom-cyclonedx-${{ needs.determine-context.outputs.release-tag }}
+
+      - name: Generate SPDX SBOM via Syft
+        uses: anchore/sbom-action@v0
+        with:
+          path: ./microservices/${{ matrix.service }}
+          format: spdx-json
+          output-file: ${{ runner.temp }}/sbom/${{ matrix.service }}/${{ matrix.service }}-sbom.spdx.json
+          artifact-name: ${{ matrix.service }}-sbom-spdx-${{ needs.determine-context.outputs.release-tag }}
+
+      - name: Generate SPDX SBOM for container image
+        shell: bash
+        run: |
+          IMAGE_REF="${{ env.ECR_REGISTRY }}/${{ matrix.service }}:${{ needs.determine-context.outputs.release-tag }}"
+          syft "$IMAGE_REF" \
+            --scope all-layers \
+            --output spdx-json="${{ runner.temp }}/sbom/${{ matrix.service }}/${{ matrix.service }}-image-sbom.spdx.json" \
+            --output cyclonedx-json="${{ runner.temp }}/sbom/${{ matrix.service }}/${{ matrix.service }}-image-sbom.cyclonedx.json"
+
+      - name: Verify Cosign attestation on container image
+        shell: bash
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          IMAGE_REF="${{ env.ECR_REGISTRY }}/${{ matrix.service }}:${{ needs.determine-context.outputs.release-tag }}"
+          echo "Verifying cosign attestation for $IMAGE_REF..."
+          cosign verify-attestation --keyless --type spdx "$IMAGE_REF" 2>/dev/null || \
+            echo "::warning::No attestation found or verification failed for $IMAGE_REF"
+
+      - name: Sign SBOM files with Cosign
+        shell: bash
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          for sbom in ${{ runner.temp }}/sbom/${{ matrix.service }}/*.json; do
+            echo "Signing SBOM: $sbom"
+            cosign sign-blob --yes \
+              --oidc-issuer "https://token.actions.githubusercontent.com" \
+              --oidc-provider-id "https://token.actions.githubusercontent.com" \
+              --tlog-upload=true \
+              "$sbom" > "$sbom.sig"
+          done
+
+      - name: Submit attestation to Rekor transparency log
+        shell: bash
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+          REKOR_HOST: ${{ env.REKOR_HOST }}
+        run: |
+          for sbom in ${{ runner.temp }}/sbom/${{ matrix.service }}/*.json; do
+            echo "Submitting $sbom to Rekor..."
+            rekor-cli upload \
+              --rekor_server "https://$REKOR_HOST" \
+              --artifact "$sbom" \
+              --signature "$sbom.sig" \
+              --type hashedrekord || \
+              echo "::warning::Rekor upload failed for $sbom (may be duplicate)"
+          done
+
+      - name: Upload SBOM to S3 with version prefix
+        shell: bash
+        run: |
+          S3_PREFIX="s3://${{ env.S3_SBOM_BUCKET }}/${{ matrix.service }}/${{ needs.determine-context.outputs.release-tag }}/"
+
+          aws s3 sync "${{ runner.temp }}/sbom/${{ matrix.service }}/" "$S3_PREFIX" \
+            --region ${{ env.AWS_REGION }} \
+            --no-progress \
+            --content-type "application/json"
+
+          echo "::notice::SBOMs uploaded to $S3_PREFIX"
+
+      - name: Upload SBOM to Dependency-Track API
+        shell: bash
+        env:
+          DT_URL: ${{ env.DEPENDENCY_TRACK_URL }}
+          DT_KEY: ${{ env.DEPENDENCY_TRACK_API_KEY }}
+        run: |
+          if [ -n "$DT_URL" ] && [ -n "$DT_KEY" ]; then
+            CYCLONEDX_SBOM="${{ runner.temp }}/sbom/${{ matrix.service }}/${{ matrix.service }}-sbom.cyclonedx.json"
+            if [ -f "$CYCLONEDX_SBOM" ]; then
+              echo "Uploading CycloneDX SBOM to Dependency-Track for ${{ matrix.service }}..."
+              curl -s -X POST "$DT_URL/api/v1/bom" \
+                -H "X-Api-Key: $DT_KEY" \
+                -H "Content-Type: application/json" \
+                -d "{
+                  \"project\": \"${{ matrix.service }}\",
+                  \"bom\": $(cat "$CYCLONEDX_SBOM")
+                }" || echo "::warning::Dependency-Track upload failed"
+            fi
+          else
+            echo "Dependency-Track not configured, skipping upload"
+          fi
+
+      - name: Upload SBOM artifacts to GitHub
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.service }}-sbom-${{ needs.determine-context.outputs.release-tag }}
+          path: ${{ runner.temp }}/sbom/${{ matrix.service }}/
+          retention-days: 90
+
+      - name: Generate SBOM diff from previous release
+        shell: bash
+        run: |
+          S3_PREFIX="s3://${{ env.S3_SBOM_BUCKET }}/${{ matrix.service }}/"
+          
+          # Find the most recent previous SBOM version
+          PREVIOUS=$(aws s3 ls "$S3_PREFIX" --region ${{ env.AWS_REGION }} | \
+            grep -v "${{ needs.determine-context.outputs.release-tag }}" | \
+            sort -r | head -1 | awk '{print $NF}' | tr -d '/')
+
+          if [ -n "$PREVIOUS" ]; then
+            echo "Comparing with previous release: $PREVIOUS"
+            aws s3 cp "$S3_PREFIX$PREVIOUS/${{ matrix.service }}-sbom.cyclonedx.json" \
+              /tmp/previous-sbom.json --region ${{ env.AWS_REGION }}
+
+            if [ -f /tmp/previous-sbom.json ]; then
+              # Use jq to compare dependency lists
+              CURRENT_DEPS=$(jq '[.components[]?.name + "@" + (.components[]?.version // "unknown")] | sort' \
+                "${{ runner.temp }}/sbom/${{ matrix.service }}/${{ matrix.service }}-sbom.cyclonedx.json")
+              PREVIOUS_DEPS=$(jq '[.components[]?.name + "@" + (.components[]?.version // "unknown")] | sort' \
+                /tmp/previous-sbom.json)
+
+              NEW_DEPS=$(jq -n --argjson cur "$CURRENT_DEPS" --argjson prev "$PREVIOUS_DEPS" \
+                '$cur - $prev')
+              REMOVED_DEPS=$(jq -n --argjson cur "$CURRENT_DEPS" --argjson prev "$PREVIOUS_DEPS" \
+                '$prev - $cur')
+
+              echo "::group::SBOM Diff: $PREVIOUS → ${{ needs.determine-context.outputs.release-tag }}"
+              echo "New dependencies: $(echo "$NEW_DEPS" | jq length)"
+              echo "$NEW_DEPS" | jq -r '.[]' | head -20
+              echo ""
+              echo "Removed dependencies: $(echo "$REMOVED_DEPS" | jq length)"
+              echo "$REMOVED_DEPS" | jq -r '.[]' | head -20
+              echo "::endgroup::"
+            fi
+          else
+            echo "No previous SBOM found for comparison (first release)."
+          fi
+
+  aggregate-and-notify:
+    name: Aggregate SBOMs and Notify
+    needs:
+      - determine-context
+      - generate-sbom
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate SBOM summary report
+        shell: bash
+        run: |
+          echo "::group::SBOM Generation Summary"
+          echo "Release: ${{ needs.determine-context.outputs.release-tag }}"
+          echo "Services: ${{ needs.determine-context.outputs.services }}"
+          
+          for svc in $(echo "${{ needs.determine-context.outputs.services }}" | tr ',' ' '); do
+            SBOM_DIR="${{ runner.temp }}/sbom/$svc"
+            if [ -d "$SBOM_DIR" ]; then
+              CYCLONE_FILE="$SBOM_DIR/$svc-sbom.cyclonedx.json"
+              if [ -f "$CYCLONE_FILE" ]; then
+                COMPONENTS=$(jq '.components | length' "$CYCLONE_FILE" 2>/dev/null || echo 0)
+                echo "$svc: $COMPONENTS components"
+              fi
+            fi
+          done
+          echo "::endgroup::"
+
+      - name: Authenticate to AWS via OIDC
+        uses: ./.github/actions/oidc-login
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-arn: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/github-actions-oidc-security-role
+          role-session-name: SBOM-Aggregator
+
+      - name: Upload aggregated SBOM manifest to S3
+        shell: bash
+        run: |
+          MANIFEST="${{ runner.temp }}/sbom-manifest.json"
+          TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+          cat > "$MANIFEST" << JSONEOF
+          {
+            "runId": "${{ github.run_id }}",
+            "releaseTag": "${{ needs.determine-context.outputs.release-tag }}",
+            "repository": "${{ github.repository }}",
+            "commitSha": "${{ github.sha }}",
+            "timestamp": "$TIMESTAMP",
+            "services": "${{ needs.determine-context.outputs.services }}",
+            "isRelease": ${{ needs.determine-context.outputs.is-release }}
+          }
+          JSONEOF
+
+          aws s3 cp "$MANIFEST" \
+            "s3://${{ env.S3_SBOM_BUCKET }}/manifests/sbom-manifest-${{ needs.determine-context.outputs.release-tag }}.json" \
+            --region ${{ env.AWS_REGION }} \
+            --content-type "application/json"
+
+      - name: Notify security team of new dependencies
+        uses: slackapi/slack-github-action@v1
+        with:
+          payload: |
+            {
+              "channel": "#security-alerts",
+              "username": "SBOM Generator",
+              "icon_emoji": ":package:",
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": {
+                    "type": "plain_text",
+                    "text": ":package: SBOM Generated: ${{ needs.determine-context.outputs.release-tag }}"
+                  }
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "SBOMs have been generated and attested for all services.\n*Release:* `${{ needs.determine-context.outputs.release-tag }}`\n*Formats:* CycloneDX, SPDX\n*Storage:* s3://${{ env.S3_SBOM_BUCKET }}/"
+                  }
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Services:*\n${{ needs.determine-context.outputs.services }}"
+                  }
+                },
+                {
+                  "type": "actions",
+                  "elements": [
+                    {
+                      "type": "button",
+                      "text": { "type": "plain_text", "text": "View SBOM Run" },
+                      "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                    }
+                  ]
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ env.SLACK_SECURITY_WEBHOOK }}

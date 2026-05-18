@@ -1,0 +1,173 @@
+---
+# =============================================================================
+# Default Deny-All Network Policies
+# Every namespace gets a default-deny ingress + egress policy
+# =============================================================================
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: frontend-service
+  annotations:
+    cyber-secure: "true"
+    description: "Deny all ingress and egress traffic by default"
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: auth-service
+  annotations:
+    cyber-secure: "true"
+    description: "Deny all ingress and egress traffic by default"
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: payment-service
+  annotations:
+    cyber-secure: "true"
+    description: "Deny all ingress and egress traffic by default"
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: notification-service
+  annotations:
+    cyber-secure: "true"
+    description: "Deny all ingress and egress traffic by default"
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: aiops-engine
+  annotations:
+    cyber-secure: "true"
+    description: "Deny all ingress and egress traffic by default"
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: external-secrets
+  annotations:
+    cyber-secure: "true"
+    description: "Deny all ingress and egress traffic by default"
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: keda
+  annotations:
+    cyber-secure: "true"
+    description: "Deny all ingress and egress traffic by default"
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: cert-manager
+  annotations:
+    cyber-secure: "true"
+    description: "Deny all ingress and egress traffic by default"
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: argocd
+  annotations:
+    cyber-secure: "true"
+    description: "Deny all ingress and egress traffic by default"
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: chaos-engineering
+  annotations:
+    cyber-secure: "true"
+    description: "Deny all ingress and egress traffic by default"
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: logging
+  annotations:
+    cyber-secure: "true"
+    description: "Deny all ingress and egress traffic by default"
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: velero
+  annotations:
+    cyber-secure: "true"
+    description: "Deny all ingress and egress traffic by default"
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress

@@ -1,0 +1,82 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: dev
+  namespace: argocd
+spec:
+  description: Development environment
+  sourceRepos:
+    - 'https://github.com/org/aiops-platform-gitops'
+    - 'https://charts.bitnami.com/bitnami'
+  destinations:
+    - namespace: '*'
+      server: https://kubernetes.default.svc
+  clusterResourceWhitelist:
+    - group: '*'
+      kind: '*'
+  namespaceResourceWhitelist:
+    - group: '*'
+      kind: '*'
+  roles:
+    - name: dev-team
+      description: Developer access to dev
+      policies:
+        - p, proj:dev:dev-team, applications, sync, dev/*, allow
+        - p, proj:dev:dev-team, applications, get, dev/*, allow
+      groups:
+        - dev-team
+  orphanedResources:
+    warn: true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: staging
+  namespace: argocd
+spec:
+  description: Staging environment
+  sourceRepos:
+    - 'https://github.com/org/aiops-platform-gitops'
+    - 'https://charts.bitnami.com/bitnami'
+  destinations:
+    - namespace: '*'
+      server: https://kubernetes.default.svc
+  clusterResourceWhitelist:
+    - group: '*'
+      kind: '*'
+  namespaceResourceWhitelist:
+    - group: '*'
+      kind: '*'
+  roles:
+    - name: staging-team
+      description: Staging access
+      policies:
+        - p, proj:staging:staging-team, applications, sync, staging/*, allow
+      groups:
+        - staging-team
+  orphanedResources:
+    warn: true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: prod
+  namespace: argocd
+spec:
+  description: Production environment
+  sourceRepos:
+    - 'https://github.com/org/aiops-platform-gitops'
+  destinations:
+    - namespace: '*'
+      server: https://kubernetes.default.svc
+  roles:
+    - name: sre-team
+      description: SRE access to prod
+      policies:
+        - p, proj:prod:sre-team, applications, sync, prod/*, allow
+        - p, proj:prod:sre-team, applications, get, prod/*, allow
+        - p, proj:prod:sre-team, applications, rollback, prod/*, allow
+      groups:
+        - sre-team
+  orphanedResources:
+    warn: false

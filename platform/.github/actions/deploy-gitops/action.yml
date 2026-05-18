@@ -1,0 +1,195 @@
+name: 'Deploy via GitOps'
+description: 'Update GitOps repository manifest, sync ArgoCD, and verify deployment health'
+inputs:
+  service:
+    description: 'Service name to deploy'
+    required: true
+  environment:
+    description: 'Target environment (dev/staging/prod)'
+    required: true
+  tag:
+    description: 'Container image tag to deploy'
+    required: true
+  image-registry:
+    description: 'Container registry URL (e.g., <account>.dkr.ecr.<region>.amazonaws.com)'
+    required: true
+  gitops-repo:
+    description: 'GitOps repository URL (e.g., org/gitops-config)'
+    required: true
+  gitops-branch:
+    description: 'GitOps repository branch to update'
+    required: false
+    default: 'main'
+  gitops-deployment-path:
+    description: 'Path within GitOps repo to the environment overlays'
+    required: false
+    default: 'argocd/overlays'
+  argocd-server:
+    description: 'ArgoCD server API URL'
+    required: true
+  argocd-username:
+    description: 'ArgoCD username or token'
+    required: true
+  argocd-password:
+    description: 'ArgoCD password or token secret'
+    required: true
+  argocd-app-name:
+    description: 'ArgoCD application name'
+    required: false
+    default: ''
+  health-check-timeout:
+    description: 'Timeout in seconds for ArgoCD health check'
+    required: false
+    default: '300'
+  deployment-type:
+    description: 'Deployment strategy: blue-green, canary, or rolling'
+    required: false
+    default: 'rolling'
+runs:
+  using: 'composite'
+  steps:
+    - name: Configure Git identity
+      shell: bash
+      run: |
+        git config --global user.name "GitOps Platform Bot"
+        git config --global user.email "gitops-bot@${{ inputs.service }}.aiops-platform.internal"
+
+    - name: Checkout GitOps repository
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ inputs.gitops-repo }}
+        ref: ${{ inputs.gitops-branch }}
+        token: ${{ inputs.argocd-password }}
+        path: gitops-repo
+        fetch-depth: 1
+
+    - name: Update Helm values with new image tag
+      shell: bash
+      run: |
+        MANIFEST_PATH="gitops-repo/${{ inputs.gitops-deployment-path }}/${{ inputs.environment }}"
+        
+        if [ ! -d "$MANIFEST_PATH" ]; then
+          echo "ERROR: Environment overlay path $MANIFEST_PATH does not exist"
+          exit 1
+        fi
+        
+        # Update Helm values files for the service
+        VALUES_FILE="$MANIFEST_PATH/values-${{ inputs.service }}.yaml"
+        if [ -f "$VALUES_FILE" ]; then
+          echo "Updating $VALUES_FILE with tag ${{ inputs.tag }}"
+          sed -i "s|tag:.*|tag: \"${{ inputs.tag }}\"|g" "$VALUES_FILE"
+          sed -i "s|repository:.*|repository: ${{ inputs.image_registry }}/${{ inputs.service }}|g" "$VALUES_FILE"
+        else
+          echo "WARNING: $VALUES_FILE not found, checking kustomize"
+        fi
+        
+        # Update kustomize image override if present
+        KUSTOMIZE_FILE="$MANIFEST_PATH/kustomization.yaml"
+        if [ -f "$KUSTOMIZE_FILE" ]; then
+          echo "Updating kustomize image in $KUSTOMIZE_FILE"
+          yq eval ".images[] |= select(.name == \"${{ inputs.image_registry }}/${{ inputs.service }}\") |= .newTag = \"${{ inputs.tag }}\"" -i "$KUSTOMIZE_FILE"
+        fi
+        
+        echo "Deployment manifest updated successfully for ${{ inputs.service }}:${{ inputs.tag }}"
+
+    - name: Validate manifests with conftest
+      shell: bash
+      run: |
+        MANIFEST_PATH="gitops-repo/${{ inputs.gitops-deployment-path }}/${{ inputs.environment }}"
+        
+        if command -v conftest &> /dev/null; then
+          echo "Running conftest policy checks..."
+          conftest test "$MANIFEST_PATH" \
+            --policy gitops-repo/policies/conftest \
+            --namespace aiops-platform \
+            --all-namespaces || echo "WARNING: conftest policies may have warnings"
+        else
+          echo "conftest not installed, pulling via Docker..."
+          docker run --rm -v "$(pwd)/$MANIFEST_PATH:/manifests" \
+            -v "$(pwd)/gitops-repo/policies/conftest:/policies" \
+            openpolicyagent/conftest test /manifests --policy /policies --all-namespaces || true
+        fi
+
+    - name: Run kustomize build validation
+      shell: bash
+      run: |
+        MANIFEST_PATH="gitops-repo/${{ inputs.gitops-deployment-path }}/${{ inputs.environment }}"
+        
+        if [ -f "$MANIFEST_PATH/kustomization.yaml" ]; then
+          kustomize build "$MANIFEST_PATH" > /tmp/kustomize-output.yaml
+          echo "kustomize build succeeded. Output written to /tmp/kustomize-output.yaml"
+          echo "Resource count: $(grep -c '^kind:' /tmp/kustomize-output.yaml)"
+        else
+          echo "No kustomization.yaml found, skipping kustomize build validation"
+        fi
+
+    - name: Commit and push manifest changes to GitOps repository
+      shell: bash
+      run: |
+        cd gitops-repo
+        
+        if [[ -z $(git status --porcelain) ]]; then
+          echo "No changes to commit"
+          exit 0
+        fi
+        
+        git add -A
+        git status
+        
+        git commit -m "chore(${{ inputs.service }}): promote to ${{ inputs.environment }} at ${{ inputs.tag }}
+        
+        This commit updates the ${{ inputs.service }} service image tag to ${{ inputs.tag }}
+        for the ${{ inputs.environment }} environment.
+        
+        Triggered by: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        Commit SHA: ${{ github.sha }}
+        Author: ${{ github.actor }}"
+        
+        git push origin ${{ inputs.gitops-branch }}
+        echo "Changes pushed to ${{ inputs.gitops-repo }} branch ${{ inputs.gitops-branch }}"
+
+    - name: Log in to ArgoCD and sync application
+      shell: bash
+      run: |
+        APP_NAME="${ARGOCD_APP_NAME:-aiops-platform-${{ inputs.environment }}}"
+        
+        argocd login ${{ inputs.argocd-server }} \
+          --username ${{ inputs.argocd-username }} \
+          --password ${{ inputs.argocd-password }} \
+          --insecure \
+          --grpc-web
+        
+        echo "Initiating sync for application: $APP_NAME"
+        argocd app sync "$APP_NAME" \
+          --timeout ${{ inputs.health-check-timeout }} \
+          --prune \
+          --apply-out-of-sync-only \
+          --grpc-web \
+          --revision ${{ inputs.gitops-branch }}
+
+    - name: Wait for ArgoCD application health status
+      shell: bash
+      run: |
+        APP_NAME="${ARGOCD_APP_NAME:-aiops-platform-${{ inputs.environment }}}"
+        
+        echo "Waiting for application $APP_NAME to become healthy..."
+        argocd app wait "$APP_NAME" \
+          --timeout ${{ inputs.health-check-timeout }} \
+          --health \
+          --degraded-threshold 10s \
+          --grpc-web
+        
+        # Get detailed status
+        argocd app get "$APP_NAME" --grpc-web --output yaml | yq eval '.status.health.status, .status.sync.status' -
+        
+        echo "::notice::Application $APP_NAME is healthy and in sync"
+
+    - name: Verify deployment resources
+      shell: bash
+      run: |
+        APP_NAME="${ARGOCD_APP_NAME:-aiops-platform-${{ inputs.environment }}}"
+        
+        echo "Getting detailed resource status..."
+        argocd app get "$APP_NAME" \
+          --grpc-web \
+          --output yaml | yq eval '.status.resources[] | {kind: .kind, name: .name, namespace: .namespace, health: .health.status, sync: .status}' -

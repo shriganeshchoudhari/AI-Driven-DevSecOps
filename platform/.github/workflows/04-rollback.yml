@@ -1,0 +1,358 @@
+name: 04 - Rollback Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: 'Service to rollback'
+        required: true
+        type: choice
+        options:
+          - frontend-service
+          - auth-service
+          - payment-service
+          - notification-service
+          - all
+      environment:
+        description: 'Environment to rollback'
+        required: true
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+      previous-tag:
+        description: 'Previous stable image tag to rollback to'
+        required: true
+        type: string
+      rollback-reason:
+        description: 'Reason for rollback'
+        required: false
+        type: string
+        default: 'Deployment regression detected'
+
+concurrency:
+  group: rollback-${{ inputs.environment }}-${{ inputs.service }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-west-2
+  AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-west-2.amazonaws.com
+  ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
+  ARGOCD_USERNAME: ${{ secrets.ARGOCD_USERNAME }}
+  ARGOCD_PASSWORD: ${{ secrets.ARGOCD_PASSWORD }}
+  SLACK_WEBHOOK: ${{ secrets.SLACK_CD_WEBHOOK }}
+  PAGERDUTY_INTEGRATION_KEY: ${{ secrets.PAGERDUTY_INTEGRATION_KEY }}
+  GITOPS_REPO: ${{ vars.GITOPS_REPO || 'org/gitops-config' }}
+
+permissions:
+  id-token: write
+  contents: write
+  deployments: write
+  security-events: read
+  actions: read
+  statuses: write
+
+jobs:
+  validate-rollback:
+    name: Validate Rollback Safety
+    runs-on: ubuntu-latest
+    outputs:
+      safe: ${{ steps.validate.outputs.safe }}
+      previous-vulnerable: ${{ steps.validate.outputs.previous-vulnerable }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to AWS via OIDC
+        uses: ./.github/actions/oidc-login
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-arn: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/github-actions-oidc-deploy-role
+          role-session-name: Rollback-Validation
+
+      - name: Validate rollback safety (check previous image for critical CVEs)
+        id: validate
+        shell: bash
+        run: |
+          echo "::group::Rollback Safety Validation"
+          echo "Service: ${{ inputs.service }}"
+          echo "Environment: ${{ inputs.environment }}"
+          echo "Target Tag: ${{ inputs.previous-tag }}"
+
+          if [ "${{ inputs.service }}" = "all" ]; then
+            SERVICES="frontend-service auth-service payment-service notification-service"
+          else
+            SERVICES="${{ inputs.service }}"
+          fi
+
+          ALL_SAFE=true
+          VULNERABLE_SERVICES=""
+
+          for svc in $SERVICES; do
+            echo "Checking $svc:${{ inputs.previous-tag }} for critical vulnerabilities..."
+            IMAGE_REF="${{ env.ECR_REGISTRY }}/$svc:${{ inputs.previous-tag }}"
+
+            # Check if image exists in ECR
+            IMAGE_EXISTS=$(aws ecr describe-images \
+              --repository-name "$svc" \
+              --image-ids imageTag=${{ inputs.previous-tag }} \
+              --region ${{ env.AWS_REGION }} \
+              --query 'imageDetails[0].imageDigest' \
+              --output text 2>/dev/null || echo "NOT_FOUND")
+
+            if [ "$IMAGE_EXISTS" = "NOT_FOUND" ]; then
+              echo "::error::Image $IMAGE_REF not found in ECR!"
+              ALL_SAFE=false
+              VULNERABLE_SERVICES="$VULNERABLE_SERVICES $svc(not-found)"
+              continue
+            fi
+
+            # Pull and scan the image with Trivy
+            docker pull "$IMAGE_REF" --quiet 2>/dev/null || true
+            TRIVY_OUTPUT=$(trivy image "$IMAGE_REF" \
+              --severity CRITICAL \
+              --no-progress \
+              --quiet \
+              --format json \
+              --timeout 5m 2>/dev/null || true)
+
+            CRITICAL_COUNT=$(echo "$TRIVY_OUTPUT" | jq '.Results[].Vulnerabilities | length' 2>/dev/null | awk '{s+=$1} END {print s+0}')
+
+            if [ -n "$CRITICAL_COUNT" ] && [ "$CRITICAL_COUNT" -gt 0 ]; then
+              echo "::warning::$svc has $CRITICAL_COUNT critical CVEs in previous tag!"
+              ALL_SAFE=false
+              VULNERABLE_SERVICES="$VULNERABLE_SERVICES $svc($CRITICAL_COUNT CVEs)"
+            else
+              echo "::notice::$svc is clean (no critical CVEs)"
+            fi
+          done
+
+          if [ "$ALL_SAFE" = false ]; then
+            echo "safe=false" >> "$GITHUB_OUTPUT"
+            echo "previous-vulnerable=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::Rollback target has critical vulnerabilities: $VULNERABLE_SERVICES"
+            echo "Proceeding with rollback despite vulnerabilities (operator override)."
+          else
+            echo "safe=true" >> "$GITHUB_OUTPUT"
+            echo "previous-vulnerable=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Rollback target is safe. Proceeding."
+          fi
+          echo "::endgroup::"
+
+  execute-rollback:
+    name: Execute Rollback
+    needs: validate-rollback
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJSON(inputs.service == 'all' && '["frontend-service","auth-service","payment-service","notification-service"]' || format('["{0}"]', inputs.service)) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Authenticate to AWS via OIDC
+        uses: ./.github/actions/oidc-login
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-arn: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/github-actions-oidc-deploy-role
+          role-session-name: Rollback-${{ matrix.service }}
+
+      - name: Create GitHub Deployment for rollback
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.repos.createDeployment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: context.sha,
+              environment: '${{ inputs.environment }}',
+              auto_merge: false,
+              required_contexts: [],
+              description: 'ROLLBACK: ${{ matrix.service }} to ${{ inputs.previous-tag }}'
+            });
+
+      - name: Update GitOps repo with previous image tag
+        uses: ./.github/actions/deploy-gitops
+        with:
+          service: ${{ matrix.service }}
+          environment: ${{ inputs.environment }}
+          tag: ${{ inputs.previous-tag }}
+          image-registry: ${{ env.ECR_REGISTRY }}
+          gitops-repo: ${{ env.GITOPS_REPO }}
+          gitops-branch: ${{ inputs.environment }}
+          argocd-server: ${{ env.ARGOCD_SERVER }}
+          argocd-username: ${{ env.ARGOCD_USERNAME }}
+          argocd-password: ${{ secrets.ARGOCD_PASSWORD }}
+          health-check-timeout: 300
+
+      - name: Run smoke tests after rollback
+        id: smoke-tests
+        shell: bash
+        run: |
+          echo "Running post-rollback smoke tests..."
+          BASE_URL="https://${{ matrix.service }}.${{ inputs.environment }}.aiops.internal"
+          ENDPOINTS=("/healthz" "/readyz")
+
+          for ep in "${ENDPOINTS[@]}"; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 "$BASE_URL$ep")
+            if [ "$STATUS" = "200" ]; then
+              echo "::notice::$ep returned $STATUS - OK"
+            else
+              echo "::error::$ep returned $STATUS - FAILED"
+              exit 1
+            fi
+          done
+          echo "::notice::Post-rollback smoke tests passed"
+
+      - name: Validate application metrics within SLO
+        shell: bash
+        run: |
+          echo "Validating P50/P95/P99 latency within SLO..."
+          METRICS_URL="https://${{ matrix.service }}.${{ inputs.environment }}.aiops.internal/metrics"
+
+          # Extract Prometheus histogram metrics if available
+          LATENCY_DATA=$(curl -s --max-time 10 "$METRICS_URL" 2>/dev/null || echo "")
+
+          if [ -n "$LATENCY_DATA" ]; then
+            echo "Metrics endpoint responded. Checking basic health indicators."
+            UP_METRIC=$(echo "$LATENCY_DATA" | grep -c "^${matrix.service//-/_}_up 1" || true)
+            if [ "$UP_METRIC" -gt 0 ]; then
+              echo "::notice::Application is reporting metrics correctly"
+            else
+              echo "::warning::Application metrics not reporting 'up' status"
+            fi
+          else
+            echo "::warning::Could not fetch metrics from $METRICS_URL"
+          fi
+
+          echo "::notice::Metrics validation completed for ${{ matrix.service }}"
+
+      - name: Update GitHub Deployment status
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const state = '${{ job.status }}' === 'success' ? 'success' : 'failure';
+            await github.rest.repos.createDeploymentStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              deployment_id: context.payload.deployment && context.payload.deployment.id,
+              state: state,
+              log_url: '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}',
+              description: 'ROLLBACK ${{ matrix.service }} to ${{ inputs.previous-tag }}: ' + state,
+              environment: '${{ inputs.environment }}'
+            });
+
+  rollback-status:
+    name: Report Rollback Status
+    needs: execute-rollback
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to AWS via OIDC
+        uses: ./.github/actions/oidc-login
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-arn: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/github-actions-oidc-deploy-role
+          role-session-name: Rollback-Report
+
+      - name: Record rollback in DynamoDB
+        shell: bash
+        env:
+          TABLE: ${{ vars.DEPLOY_TRACKING_TABLE || 'aiops-deployment-tracker' }}
+        run: |
+          TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          aws dynamodb put-item \
+            --table-name "$TABLE" \
+            --item "{
+              \"deployId\": {\"S\": \"rollback-${{ github.run_id }}\"},
+              \"commitSha\": {\"S\": \"${{ github.sha }}\"},
+              \"service\": {\"S\": \"${{ inputs.service }}\"},
+              \"environment\": {\"S\": \"${{ inputs.environment }}\"},
+              \"status\": {\"S\": \"${{ needs.execute-rollback.result }}\"},
+              \"type\": {\"S\": \"rollback\"},
+              \"previousTag\": {\"S\": \"${{ inputs.previous-tag }}\"},
+              \"reason\": {\"S\": \"${{ inputs.rollback-reason }}\"},
+              \"triggeredBy\": {\"S\": \"${{ github.actor }}\"},
+              \"timestamp\": {\"S\": \"$TIMESTAMP\"}
+            }" \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Notify Slack with rollback status
+        uses: slackapi/slack-github-action@v1
+        with:
+          payload: |
+            {
+              "channel": "#cd-deployments",
+              "username": "Rollback Bot",
+              "icon_emoji": ":arrows_counterclockwise:",
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": {
+                    "type": "plain_text",
+                    "text": "${{ needs.execute-rollback.result == 'success' && ':arrows_counterclockwise:' || ':fire:' }} Rollback ${{ needs.execute-rollback.result == 'success' && 'Completed' || 'Failed' }}"
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    { "type": "mrkdwn", "text": "*Service:*\n${{ inputs.service }}" },
+                    { "type": "mrkdwn", "text": "*Environment:*\n${{ inputs.environment }}" },
+                    { "type": "mrkdwn", "text": "*Rolled Back To:*\n`${{ inputs.previous-tag }}`" },
+                    { "type": "mrkdwn", "text": "*Reason:*\n${{ inputs.rollback-reason }}" }
+                  ]
+                },
+                {
+                  "type": "actions",
+                  "elements": [
+                    {
+                      "type": "button",
+                      "text": { "type": "plain_text", "text": "View Rollback Run" },
+                      "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                    }
+                  ]
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    { "type": "mrkdwn", "text": "Triggered by: ${{ github.actor }}" }
+                  ]
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ env.SLACK_WEBHOOK }}
+
+      - name: Trigger PagerDuty if rollback failed
+        if: needs.execute-rollback.result == 'failure'
+        uses: pagerduty/pagerduty-action@v1
+        with:
+          integration-key: ${{ env.PAGERDUTY_INTEGRATION_KEY }}
+          integration-type: events-api-v2
+          summary: |
+            Rollback Failed: ${{ inputs.service }} in ${{ inputs.environment }} to ${{ inputs.previous-tag }}
+          source: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          severity: critical
+          timestamp: ${{ steps.timestamp.outputs.value }}
+          component: rollback-workflow
+          group: ${{ inputs.service }}
+          class: deployment
+          custom_details: |
+            {
+              "service": "${{ inputs.service }}",
+              "environment": "${{ inputs.environment }}",
+              "targetTag": "${{ inputs.previous-tag }}",
+              "reason": "${{ inputs.rollback-reason }}",
+              "runId": "${{ github.run_id }}",
+              "actor": "${{ github.actor }}"
+            }

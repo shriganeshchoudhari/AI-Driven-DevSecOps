@@ -1,0 +1,105 @@
+# Terraform
+*.tfstate*
+*.tfplan
+.terraform/
+**/.terraform.lock.hcl
+**/.tfvars
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.env
+venv/
+.venv/
+*.egg
+dist/
+build/
+*.whl
+*.tar.gz
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*.swn
+*.bak
+*.orig
+*.tmp
+*~
+
+# Kubernetes
+kubeconfig*
+*.kubeconfig
+kubecfg
+
+# Secrets
+*.pem
+*.key
+*.cert
+secrets/
+*.enc.yaml
+*.enc.yml
+!**/sealed-secrets/*.yaml
+
+# Build
+*.tar
+*.gz
+*.zip
+dist/
+build/
+*.tgz
+*.jar
+*.war
+
+# Helm
+charts/*.tgz
+!charts/**/requirements.lock
+
+# Monitoring
+data/
+prometheus-data/
+grafana-data/
+loki-data/
+tempo-data/
+
+# Local
+*.local
+.env.local
+.env.*.local
+*.log
+.DS_Store
+Thumbs.db
+
+# Node
+node_modules/
+.npm/
+
+# Go
+vendor/
+*.out
+
+# Testing
+coverage/
+*.coverprofile
+*.test
+test-results/
+
+# Docker
+.docker/
+docker-compose.override.yaml
+docker-compose.override.yml
+
+# ArgoCD
+argocd/auth-token
+argocd/admin-password
+
+# Generated
+generated/
+output/
+tmp/
+temp/
+# Added by code-review-graph
+.code-review-graph/

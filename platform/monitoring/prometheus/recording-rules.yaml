@@ -1,0 +1,190 @@
+groups:
+  - name: kubernetes_aggregates
+    interval: 30s
+    rules:
+      - record: cluster:cpu_usage:ratio
+        expr: |
+          sum(rate(container_cpu_usage_seconds_total{container!=""}[5m]))
+          /
+          sum(kube_node_status_capacity{resource="cpu"})
+
+      - record: cluster:memory_usage:ratio
+        expr: |
+          sum(container_memory_working_set_bytes{container!=""})
+          /
+          sum(kube_node_status_capacity{resource="memory"})
+
+      - record: namespace:cpu_usage:ratio
+        expr: |
+          sum(rate(container_cpu_usage_seconds_total{container!=""}[5m])) by (namespace)
+          /
+          sum(kube_node_status_capacity{resource="cpu"})
+
+      - record: namespace:memory_usage:ratio
+        expr: |
+          sum(container_memory_working_set_bytes{container!=""}) by (namespace)
+          /
+          sum(kube_node_status_capacity{resource="memory"})
+
+      - record: namespace:pod_count
+        expr: count(kube_pod_status_phase{phase="Running"}) by (namespace)
+
+      - record: cluster:network_io:bytes_total
+        expr: |
+          sum(rate(container_network_receive_bytes_total[5m]))
+          + sum(rate(container_network_transmit_bytes_total[5m]))
+
+  - name: node_aggregates
+    interval: 30s
+    rules:
+      - record: node:cpu_usage:ratio
+        expr: |
+          sum(rate(node_cpu_seconds_total{mode!="idle"}[5m])) by (instance)
+          / on(instance)
+          sum(node_cpu_seconds_total[5m]) by (instance)
+
+      - record: node:memory_usage:ratio
+        expr: |
+          (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes)
+          / node_memory_MemTotal_bytes
+
+      - record: node:disk_usage:ratio
+        expr: |
+          (1 - (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}))
+
+      - record: node:network_errors:ratio
+        expr: |
+          rate(node_network_receive_errors_total[5m])
+          / rate(node_network_receive_packets_total[5m])
+
+      - record: kubelet:pod_density:count
+        expr: count(kube_pod_info) by (node)
+
+      - record: node:disk_read_bytes:rate5m
+        expr: rate(node_disk_read_bytes_total[5m])
+
+      - record: node:disk_written_bytes:rate5m
+        expr: rate(node_disk_written_bytes_total[5m])
+
+      - record: node:network_receive_bytes:rate5m
+        expr: rate(node_network_receive_bytes_total[5m])
+
+      - record: node:network_transmit_bytes:rate5m
+        expr: rate(node_network_transmit_bytes_total[5m])
+
+  - name: service_aggregates
+    interval: 1m
+    rules:
+      - record: service:http_requests_total:rate5m
+        expr: |
+          sum(rate(http_requests_total[5m])) by (service, namespace, status)
+
+      - record: service:http_requests_total:rate1h
+        expr: |
+          sum(rate(http_requests_total[1h])) by (service, namespace)
+
+      - record: service:http_request_latency_seconds:p99
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(http_request_duration_seconds_bucket[5m])) by (le, service, namespace)
+          )
+
+      - record: service:http_request_latency_seconds:p95
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(http_request_duration_seconds_bucket[5m])) by (le, service, namespace)
+          )
+
+      - record: service:http_request_latency_seconds:p50
+        expr: |
+          histogram_quantile(0.50,
+            sum(rate(http_request_duration_seconds_bucket[5m])) by (le, service, namespace)
+          )
+
+      - record: service:error_ratio:rate5m
+        expr: |
+          sum(rate(http_requests_total{status=~"5.."}[5m])) by (service, namespace)
+          /
+          sum(rate(http_requests_total[5m])) by (service, namespace)
+
+      - record: service:error_ratio:rate1h
+        expr: |
+          sum(rate(http_requests_total{status=~"5.."}[1h])) by (service, namespace)
+          /
+          sum(rate(http_requests_total[1h])) by (service, namespace)
+
+      - record: service:request_count:total
+        expr: sum(http_requests_total) by (service, namespace)
+
+  - name: slo_metrics
+    interval: 1m
+    rules:
+      - record: slo:availability:30d
+        expr: |
+          (1 - (
+            sum(rate(http_requests_total{status=~"5.."}[30d]))
+            /
+            sum(rate(http_requests_total[30d]))
+          )) * 100
+
+      - record: slo:availability:7d
+        expr: |
+          (1 - (
+            sum(rate(http_requests_total{status=~"5.."}[7d]))
+            /
+            sum(rate(http_requests_total[7d]))
+          )) * 100
+
+      - record: slo:availability:24h
+        expr: |
+          (1 - (
+            sum(rate(http_requests_total{status=~"5.."}[24h]))
+            /
+            sum(rate(http_requests_total[24h]))
+          )) * 100
+
+      - record: slo:latency_p99:30d
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(http_request_duration_seconds_bucket[30d])) by (le, service)
+          )
+
+      - record: slo:burn_rate:1h
+        expr: |
+          (1 - (
+            sum(rate(http_requests_total{status=~"5.."}[1h]))
+            /
+            sum(rate(http_requests_total[1h]))
+          )) / (1 - 0.99)
+
+      - record: slo:error_budget_remaining
+        expr: |
+          1 - (
+            sum(rate(http_requests_total{status=~"5.."}[30d]))
+            / sum(rate(http_requests_total[30d]))
+          ) / (1 - 0.99)
+
+      - record: slo:error_budget_remaining_7d
+        expr: |
+          1 - (
+            sum(rate(http_requests_total{status=~"5.."}[7d]))
+            / sum(rate(http_requests_total[7d]))
+          ) / (1 - 0.99)
+
+  - name: kubernetes_saturation
+    interval: 30s
+    rules:
+      - record: cluster:pod_utilization:ratio
+        expr: |
+          sum(kube_pod_status_phase{phase="Running"})
+          / sum(kube_node_status_capacity{resource="pods"})
+
+      - record: namespace:cpu_request_utilization:ratio
+        expr: |
+          sum(kube_pod_container_resource_requests{resource="cpu"})
+          / sum(kube_node_status_capacity{resource="cpu"})
+
+      - record: namespace:memory_request_utilization:ratio
+        expr: |
+          sum(kube_pod_container_resource_requests{resource="memory"})
+          / sum(kube_node_status_capacity{resource="memory"})

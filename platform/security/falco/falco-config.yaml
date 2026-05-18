@@ -1,0 +1,655 @@
+---
+# =============================================================================
+# Falco Configuration - Custom Rules
+# Enterprise-grade threat detection for Kubernetes workloads
+# =============================================================================
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: falco-config
+  namespace: falco
+  labels:
+    app: falco
+    cyber-secure: "true"
+    component: rules
+data:
+  # ===========================================================================
+  # Custom Rules File - Loaded alongside default Falco rules
+  # ===========================================================================
+  custom_rules.yaml: |
+    #
+    # Copyright (c) 2026 Enterprise Security Team
+    # Custom Falco rules for production Kubernetes security monitoring
+    #
+
+    # ---------------------------------------------------------------------------
+    # MACROS
+    # ---------------------------------------------------------------------------
+
+    # User-spawned container processes (not Falco itself)
+    - macro: container_entrypoint
+      condition: >
+        (container.id != host)
+        and (proc.pname in (runc:[0:PARENT], runc:[1:CHILD], runc, docker-runc, 
+                            containerd-shim, cri-o, exe, kubelet))
+        and (not proc.name in (falco, falco-event-generator))
+
+    # Processes that should never spawn a shell
+    - macro: never_allowed_shell_parents
+      condition: >
+        proc.pname in (java, python, python3, node, ruby, php, nginx, httpd,
+                       apache2, uwsgi, gunicorn, unicorn, passenger, puma,
+                       thin, torquebox)
+
+    # Outbound connections to known mining pools
+    - macro: mining_pool_domains
+      condition: >
+        (fd.sip.name in (pool.supportxmr.com, xmrpool.eu, mine.xmr.ae,
+                         pool.minexmr.com, xmr.2miners.com, pool.monero.hashvault.pro,
+                         eth.2miners.com, ethpool.org, ethermine.org, 
+                         pool.lethean.xyz, zcash.flypool.org))
+        or (fd.sip.name endswith .miningpool.io)
+        or (fd.sip.name endswith .hashrate.to)
+
+    # Sensitive files that should not be read inside containers
+    - macro: sensitive_file_paths
+      condition: >
+        fd.name in (/etc/shadow, /etc/gshadow, /etc/passwd-, /etc/shadow-,
+                    /var/run/secrets/kubernetes.io/serviceaccount/token,
+                    /var/run/secrets/kubernetes.io/serviceaccount/ca.crt,
+                    /root/.ssh/id_rsa, /root/.ssh/id_dsa, /root/.ssh/authorized_keys,
+                    /home/*/.ssh/id_rsa, /home/*/.ssh/authorized_keys,
+                    /var/log/auth.log, /var/log/secure, /var/log/syslog,
+                    /var/log/journal/*, /var/lib/kubelet/pki/*,
+                    /etc/kubernetes/pki/*)
+        and container_entrypoint
+
+    # Kubernetes API server IP range (adjust to cluster CIDR)
+    - macro: k8s_api_server
+      condition: >
+        fd.sip in (10.100.0.1, 172.20.0.1, 192.168.0.1)
+
+    # Unusual outbound ports for container workloads
+    - macro: unusual_outbound_ports
+      condition: >
+        fd.sport in (22, 23, 135, 137, 139, 445, 1433, 1521, 3306, 3389, 5900, 5901)
+
+    # ---------------------------------------------------------------------------
+    # RULE 1: Reverse Shell Detection
+    # ---------------------------------------------------------------------------
+    - rule: Reverse Shell Detected
+      desc: >
+        Detects potential reverse shell execution by monitoring for suspicious
+        process spawning patterns combined with outbound network connections.
+        Triggers when a shell process (bash, sh, zsh) is spawned by a non-shell
+        parent process like Java, Python, or Node.js, and immediately connects
+        to an external IP address on a non-standard port.
+      condition: >
+        container_entrypoint
+        and spawned_process
+        and proc.name in (bash, sh, zsh, dash, ash, ksh, csh, tcsh, fish)
+        and proc.pname in (nc, ncat, netcat, socat, telnet, python, python3,
+                           perl, php, ruby, lua, node, java, expect, script,
+                           tmux, screen, busybox, wget, curl, openssl)
+        and ((evt.type = execve and evt.dir = <)
+             or (evt.type = clone and evt.dir = <))
+      output: >
+        Potential reverse shell detected (user=%user.name container=%container.name
+        image=%container.image proc=%proc.name parent=%proc.pname cmdline=%proc.cmdline
+        pid=%proc.pid fd=%fd.name)
+      priority: CRITICAL
+      tags: [attack, container, mitre_execution, mitre_persistence,
+             T1059, TA0002, reverse_shell]
+
+    # ---------------------------------------------------------------------------
+    # RULE 2: Crypto Miner Detection
+    # ---------------------------------------------------------------------------
+    - rule: Crypto Miner Connection Detected
+      desc: >
+        Alerts when a container process establishes an outbound TCP connection
+        to a known cryptocurrency mining pool domain or IP address. This rule
+        monitors DNS resolutions and TCP connections to identify cryptomining
+        activity inside containers.
+      condition: >
+        container_entrypoint
+        and evt.type = connect
+        and evt.dir = <
+        and fd.type = ipv4
+        and fd.net = /23
+        and (mining_pool_domains
+             or fd.sip.name in (pool.supportxmr.com, xmrpool.eu)
+             or (fd.sport = 3333 and evt.rawres >= 0)
+             or (fd.sport = 4444 and evt.rawres >= 0)
+             or (fd.sport = 5555 and evt.rawres >= 0)
+             or (fd.sport = 7777 and evt.rawres >= 0)
+             or (fd.sport = 8080 and proc.name = xmrig))
+      output: >
+        Cryptocurrency mining connection detected (user=%user.name
+        container=%container.name image=%container.image
+        proc=%proc.name pid=%proc.pid connection=%fd.name
+        destination=%fd.sip:%fd.sport process_args=%proc.cmdline)
+      priority: CRITICAL
+      tags: [attack, container, cryptomining, mitre_execution, T1496]
+
+    - rule: Crypto Miner Process Detected
+      desc: >
+        Detects known cryptocurrency mining processes by process name or
+        command-line arguments. Monitors for xmrig, miner, nbminer, and other
+        common mining binary names and their typical argument patterns.
+      condition: >
+        container_entrypoint
+        and spawned_process
+        and (proc.name in (xmrig, xmrig-nvidia, xmrig-amd, miner, nbminer,
+                           lolminer, t-rex, phoenixminer, teamredminer, gminer,
+                           bminer, claymore, ethminer, cpuminer, sgminer, ccminer))
+        or (proc.cmdline icontains "stratum+tcp://")
+        or (proc.cmdline icontains "stratum+ssl://")
+        or (proc.cmdline icontains "xmr")
+      output: >
+        Cryptocurrency mining process detected (user=%user.name
+        container=%container.name image=%container.image
+        proc=%proc.name cmdline=%proc.cmdline pid=%proc.pid)
+      priority: CRITICAL
+      tags: [attack, container, cryptomining, mitre_execution, T1496]
+
+    # ---------------------------------------------------------------------------
+    # RULE 3: Container Breakout Attempt Detection
+    # ---------------------------------------------------------------------------
+    - rule: Container Breakout Attempt
+      desc: >
+        Detects attempts to escape container isolation by detecting syscalls
+        that are commonly used in container breakout exploits. Monitors for
+        mount namespace escapes, cgroup escapes, and kernel module loading.
+      condition: >
+        container_entrypoint
+        and (evt.type in (mount, umount, pivot_root, chroot, unshare,
+                          setns, clone, ptrace, process_vm_writev,
+                          process_vm_readv, kexec_load, finit_module,
+                          init_module, delete_module, bpf, perf_event_open))
+        and evt.dir = <
+        and (not proc.name in (falco, systemd, runc, containerd))
+      output: >
+        Container breakout attempt detected (user=%user.name
+        container=%container.name image=%container.image
+        proc=%proc.name syscall=%evt.type cmdline=%proc.cmdline
+        pid=%proc.pid mount_ns=%proc.mount_ns)
+      priority: CRITICAL
+      tags: [attack, container, privilege_escalation, mitre_privilege_escalation,
+             T1611, breakout]
+
+    - rule: Mount Namespace Escape
+      desc: >
+        Detects when a process attempts to mount the host filesystem inside
+        a container by using mount syscall with /etc/hostname, /proc/1/root,
+        or /var/lib/kubelet as targets, indicating a potential container
+        breakout via host filesystem access.
+      condition: >
+        container_entrypoint
+        and evt.type = mount
+        and evt.dir = <
+        and (fd.name startswith /etc/hostname
+             or fd.name startswith /proc/1/root
+             or fd.name startswith /var/lib/kubelet
+             or fd.name startswith /dev/sda)
+      output: >
+        Host filesystem mount attempt detected (user=%user.name
+        container=%container.name image=%container.image
+        proc=%proc.name pid=%proc.pid mount_target=%fd.name)
+      priority: CRITICAL
+      tags: [attack, container, mount, privilege_escalation, T1611]
+
+    - rule: Cgroup Escape Detected
+      desc: >
+        Detects cgroup-based container escape attempts. Monitors for writes
+        to cgroup release_agent, notify_on_release, or devices.allow files
+        which are commonly used in cgroup escape exploits like the
+        runc container breakout (CVE-2019-5736).
+      condition: >
+        container_entrypoint
+        and evt.type = write
+        and evt.dir = <
+        and (fd.name contains "release_agent"
+             or fd.name contains "notify_on_release"
+             or fd.name endswith "devices.allow")
+      output: >
+        Cgroup escape attempt detected (user=%user.name
+        container=%container.name proc=%proc.name
+        pid=%proc.pid target=%fd.name)
+      priority: CRITICAL
+      tags: [attack, container, cgroup_escape, T1611, CVE-2019-5736]
+
+    # ---------------------------------------------------------------------------
+    # RULE 4: Kubernetes API Abuse Detection
+    # ---------------------------------------------------------------------------
+    - rule: Kubernetes API Abuse - Service Account Enumeration
+      desc: >
+        Detects attempts to enumerate Kubernetes service account tokens or
+        access the Kubernetes API from inside a container in an unauthorized
+        manner. Triggers on reads of the service account token, CA certificate,
+        or namespace from the default mount path.
+      condition: >
+        container_entrypoint
+        and (evt.type in (open, openat, openat2))
+        and evt.dir = <
+        and (fd.name = /var/run/secrets/kubernetes.io/serviceaccount/token
+             or fd.name = /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+             or fd.name = /var/run/secrets/kubernetes.io/serviceaccount/namespace)
+        and (not proc.name in (kubelet, kube-controller-manager, kube-scheduler,
+                                falco, envoy, pilot-discovery, kube-rbac-proxy))
+      output: >
+        Kubernetes service account token accessed (user=%user.name
+        container=%container.name image=%container.image
+        proc=%proc.name pid=%proc.pid file=%fd.name cmdline=%proc.cmdline)
+      priority: WARNING
+      tags: [k8s, container, discovery, mitre_discovery, T1613]
+
+    - rule: Kubernetes API Server Request from Container
+      desc: >
+        Detects HTTP requests from container processes to the Kubernetes
+        API server on port 6443 or 443. This could indicate a compromised
+        pod attempting to interact with the cluster API for privilege
+        escalation or data exfiltration.
+      condition: >
+        container_entrypoint
+        and evt.type = connect
+        and evt.dir = <
+        and fd.type in (ipv4, ipv6)
+        and (fd.sport = 6443 or fd.sport = 443)
+        and k8s_api_server
+      output: >
+        Container connecting to Kubernetes API server
+        (user=%user.name container=%container.name image=%container.image
+        proc=%proc.name pid=%proc.pid connection=%fd.name
+        target=%fd.sip:%fd.sport)
+      priority: WARNING
+      tags: [k8s, container, mitre_discovery, T1613, api_server]
+
+    - rule: Kubernetes API Abuse - RBAC Manipulation
+      desc: >
+        Detects attempts to create or modify RBAC resources from within
+        a container via kubectl or API calls. This is a strong indicator
+        of privilege escalation attempts inside the cluster.
+      condition: >
+        container_entrypoint
+        and spawned_process
+        and proc.name = kubectl
+        and (proc.cmdline contains "create clusterrole"
+             or proc.cmdline contains "create clusterrolebinding"
+             or proc.cmdline contains "create role"
+             or proc.cmdline contains "create rolebinding"
+             or proc.cmdline contains "impersonate")
+      output: >
+        RBAC manipulation attempt detected (user=%user.name
+        container=%container.name image=%container.image
+        cmdline=%proc.cmdline pid=%proc.pid)
+      priority: CRITICAL
+      tags: [k8s, container, privilege_escalation, mitre_privilege_escalation,
+             T1098]
+
+    # ---------------------------------------------------------------------------
+    # RULE 5: Sensitive File Access in Containers
+    # ---------------------------------------------------------------------------
+    - rule: Sensitive File Read in Container
+      desc: >
+        Detects reads of sensitive files inside containers, including
+        credential files, SSH keys, Kubernetes PKI materials, and
+        authentication logs. Container processes should never need to
+        access these files.
+      condition: >
+        (evt.type in (open, openat, openat2))
+        and evt.dir = <
+        and sensitive_file_paths
+      output: >
+        Sensitive file read attempt (user=%user.name container=%container.name
+        image=%container.image proc=%proc.name pid=%proc.pid
+        file=%fd.name cmdline=%proc.cmdline)
+      priority: WARNING
+      tags: [container, filesystem, mitre_credential_access, T1552, sensitive_data]
+
+    # ---------------------------------------------------------------------------
+    # RULE 6: Privilege Escalation Detection
+    # ---------------------------------------------------------------------------
+    - rule: Privilege Escalation - setuid setgid Binary Execution
+      desc: >
+        Detects execution of setuid or setgid binaries from within a
+        container. These binaries allow a process to run with elevated
+        privileges and are commonly used in privilege escalation chains.
+      condition: >
+        container_entrypoint
+        and spawned_process
+        and evt.type = execve
+        and evt.dir = <
+        and (proc.name in (su, sudo, pkexec, doas, newgrp, chsh,
+                           passwd, gpasswd, chfn, expiry, login))
+      output: >
+        Privilege escalation binary execution (user=%user.name
+        container=%container.name image=%container.image
+        proc=%proc.name cmdline=%proc.cmdline pid=%proc.pid)
+      priority: WARNING
+      tags: [container, privilege_escalation, mitre_privilege_escalation, T1548]
+
+    - rule: Privilege Escalation - New Capabilities
+      desc: >
+        Detects when a container process gains new Linux capabilities
+        beyond those originally granted by the container runtime. This
+        can indicate a successful privilege escalation exploit.
+      condition: >
+        container_entrypoint
+        and evt.type in (prctl, capset)
+        and evt.dir = <
+        and (evt.arg.cap_effective contains "CAP_SYS_ADMIN"
+             or evt.arg.cap_effective contains "CAP_NET_ADMIN"
+             or evt.arg.cap_effective contains "CAP_DAC_OVERRIDE"
+             or evt.arg.cap_effective contains "CAP_SYS_MODULE"
+             or evt.arg.cap_effective contains "CAP_SYS_RAWIO"
+             or evt.arg.cap_effective contains "CAP_SYS_PTRACE")
+      output: >
+        New privileged capability detected (user=%user.name
+        container=%container.name proc=%proc.name
+        capabilities=%evt.arg.cap_effective pid=%proc.pid)
+      priority: CRITICAL
+      tags: [container, privilege_escalation, mitre_privilege_escalation, T1548]
+
+    - rule: Privilege Escalation - Ptrace Based
+      desc: >
+        Detects ptrace syscall from a container process. ptrace allows
+        a process to attach to and control another process, which can
+        be used for privilege escalation or credential theft.
+      condition: >
+        container_entrypoint
+        and evt.type = ptrace
+        and evt.dir = <
+        and evt.arg.request = PTRACE_ATTACH
+        and (not proc.name in (falco, strace, gdb, perf))
+      output: >
+        Ptrace attachment detected (user=%user.name container=%container.name
+        proc=%proc.name pid=%proc.pid target_pid=%evt.arg.pid)
+      priority: WARNING
+      tags: [container, privilege_escalation, mitre_credential_access, T1055]
+
+    # ---------------------------------------------------------------------------
+    # RULE 7: Unexpected Outbound Connections
+    # ---------------------------------------------------------------------------
+    - rule: Unexpected Outbound Connection to Internet
+      desc: >
+        Detects outbound TCP connections from containers to IP addresses
+        outside of private RFC 1918 address space on non-standard ports.
+        This can indicate data exfiltration, command-and-control traffic,
+        or unauthorized external communication.
+      condition: >
+        container_entrypoint
+        and evt.type = connect
+        and evt.dir = <
+        and fd.type = ipv4
+        and fd.net != /8
+        and fd.net != 172.16/12
+        and fd.net != 192.168/16
+        and fd.net != 100.64/10
+        and not fd.snet = 10.0.0.0/8
+        and unlikely(fd.sport in (80, 443))
+        and unusual_outbound_ports
+      output: >
+        Unexpected outbound connection to internet (user=%user.name
+        container=%container.name image=%container.image
+        proc=%proc.name pid=%proc.pid connection=%fd.name
+        destination=%fd.sip:%fd.sport)
+      priority: WARNING
+      tags: [container, network, mitre_command_and_control, T1571, exfiltration]
+
+    - rule: Unexpected DNS Query to External Domain
+      desc: >
+        Detects DNS queries from containers to external domains that
+        1) are newly registered (within 30 days), 2) use DGA-like patterns,
+        or 3) resolve to known malicious IPs. This can indicate C2
+        communication or data exfiltration via DNS tunneling.
+      condition: >
+        container_entrypoint
+        and evt.type = connect
+        and evt.dir = <
+        and fd.type = ipv4
+        and fd.sport = 53
+      output: >
+        External DNS query from container (user=%user.name
+        container=%container.name image=%container.image
+        proc=%proc.name pid=%proc.pid query=%fd.sip)
+      priority: NOTICE
+      tags: [container, network, mitre_command_and_control, T1572, dns]
+
+    # ---------------------------------------------------------------------------
+    # RULE 8: Malicious File Downloads
+    # ---------------------------------------------------------------------------
+    - rule: Malicious Binary Download
+      desc: >
+        Detects when a container process downloads executable binaries
+        from the internet using wget, curl, or similar tools. This can
+        indicate a compromised container downloading malware or
+        additional exploit tools.
+      condition: >
+        container_entrypoint
+        and spawned_process
+        and proc.name in (wget, curl, fetch, axel, aria2c, lwp-download, httrack)
+        and (proc.cmdline contains ".sh"
+             or proc.cmdline contains ".exe"
+             or proc.cmdline contains ".bin"
+             or proc.cmdline contains "chmod +x"
+             or proc.cmdline contains ">/dev/null"
+             or proc.cmdline contains "-o "
+             or proc.cmdline contains "--output")
+      output: >
+        Malicious binary download detected (user=%user.name
+        container=%container.name image=%container.image
+        proc=%proc.name cmdline=%proc.cmdline pid=%proc.pid)
+      priority: WARNING
+      tags: [container, malware, mitre_execution, T1204, download]
+
+    # ---------------------------------------------------------------------------
+    # RULE 9: Interactive Shell Detection
+    # ---------------------------------------------------------------------------
+    - rule: Interactive Shell Spawned in Container
+      desc: >
+        Detects when an interactive shell is spawned inside a container.
+        Interactive shells are rarely needed in production containers and
+        can indicate active compromise or unauthorized debugging.
+      condition: >
+        container_entrypoint
+        and spawned_process
+        and proc.name in (sh, bash, zsh, dash, ash, ksh)
+        and (proc.cmdline contains "-i"
+             or proc.cmdline contains "--login"
+             or proc.tty != 0)
+      output: >
+        Interactive shell spawned (user=%user.name
+        container=%container.name image=%container.image
+        proc=%proc.name cmdline=%proc.cmdline pid=%proc.pid
+        tty=%proc.tty)
+      priority: NOTICE
+      tags: [container, shell, mitre_execution, T1059, interactive]
+
+    # ---------------------------------------------------------------------------
+    # RULE 10: Packet Socket / Raw Socket Creation
+    # ---------------------------------------------------------------------------
+    - rule: Packet Socket Creation in Container
+      desc: >
+        Detects creation of raw or packet sockets inside a container.
+        These sockets allow a process to read and write raw network packets,
+        bypassing network security controls and potentially enabling
+        packet sniffing or ARP spoofing attacks.
+      condition: >
+        container_entrypoint
+        and evt.type = socket
+        and evt.dir = <
+        and (evt.arg.domain = AF_PACKET
+             or evt.arg.type = SOCK_RAW
+             or evt.arg.type = SOCK_PACKET)
+      output: >
+        Raw/packet socket created (user=%user.name
+        container=%container.name image=%container.image
+        proc=%proc.name pid=%proc.pid domain=%evt.arg.domain
+        socket_type=%evt.arg.type)
+      priority: WARNING
+      tags: [container, network, mitre_discovery, T1040, packet_sniffing]
+
+    # ---------------------------------------------------------------------------
+    # RULE 11: Process Hollowing / Code Injection
+    # ---------------------------------------------------------------------------
+    - rule: Process Code Injection Detected
+      desc: >
+        Detects memory writes to a process that has been recently execve'd,
+        which can indicate process hollowing or code injection. This is
+        a sophisticated evasion technique used by advanced malware.
+      condition: >
+        container_entrypoint
+        and evt.type = ptrace
+        and evt.dir = <
+        and evt.arg.request = PTRACE_POKETEXT
+      output: >
+        Process memory modification detected (user=%user.name
+        container=%container.name proc=%proc.name pid=%proc.pid
+        target_pid=%evt.arg.pid request=%evt.arg.request)
+      priority: CRITICAL
+      tags: [container, malware, mitre_defense_evasion, T1055, code_injection]
+
+    # ---------------------------------------------------------------------------
+    # RULE 12: Core Pattern Modification
+    # ---------------------------------------------------------------------------
+    - rule: Core Dump Pattern Modified
+      desc: >
+        Detects modification of the core dump pattern file (/proc/sys/kernel/core_pattern)
+        inside a container. This technique can be used to execute arbitrary
+        code when a process crashes, a known privilege escalation method.
+      condition: >
+        container_entrypoint
+        and evt.type = write
+        and evt.dir = <
+        and fd.name = /proc/sys/kernel/core_pattern
+      output: >
+        Core dump pattern modification detected (user=%user.name
+        container=%container.name proc=%proc.name pid=%proc.pid
+        content=%evt.arg.data)
+      priority: CRITICAL
+      tags: [container, privilege_escalation, mitre_privilege_escalation,
+             T1611, core_pattern]
+
+    # ---------------------------------------------------------------------------
+    # RULE 13: Kubernetes ConfigMap/Secret Enumeration
+    # ---------------------------------------------------------------------------
+    - rule: Kubernetes Secret Enumeration via API
+      desc: >
+        Detects attempts to list or get Kubernetes Secrets from within
+        a container via the Kubernetes API. Unauthorized secret access
+        could indicate an attacker harvesting credentials.
+      condition: >
+        container_entrypoint
+        and spawned_process
+        and proc.name = kubectl
+        and (proc.cmdline contains "get secrets"
+             or proc.cmdline contains "get secret"
+             or proc.cmdline contains "describe secret")
+      output: >
+        Kubernetes secret enumeration detected (user=%user.name
+        container=%container.name image=%container.image
+        cmdline=%proc.cmdline pid=%proc.pid)
+      priority: WARNING
+      tags: [k8s, container, credential_access, mitre_credential_access, T1552]
+
+    # ---------------------------------------------------------------------------
+    # RULE 14: Fileless Execution Detection
+    # ---------------------------------------------------------------------------
+    - rule: Fileless Execution via /dev/shm or memfd
+      desc: >
+        Detects execution of binaries from shared memory (/dev/shm),
+        anonymous mapped files (memfd:), or tmpfs. Fileless execution
+        is a common technique used by advanced malware to avoid
+        filesystem-based detection.
+      condition: >
+        container_entrypoint
+        and spawned_process
+        and evt.type = execve
+        and evt.dir = <
+        and (proc.exepath startswith /dev/shm
+             or proc.exepath startswith /run/shm
+             or proc.exepath startswith /proc/self/fd
+             or proc.exepath startswith memfd:)
+      output: >
+        Fileless execution detected (user=%user.name
+        container=%container.name image=%container.image
+        proc=%proc.name exepath=%proc.exepath pid=%proc.pid)
+      priority: CRITICAL
+      tags: [container, malware, mitre_defense_evasion, T1055, fileless]
+
+    # ---------------------------------------------------------------------------
+    # RULE 15: Kubernetes CronJob / DaemonSet Reconnaissance
+    # ---------------------------------------------------------------------------
+    - rule: Kubernetes Workload Reconnaissance
+      desc: >
+        Detects enumeration of cluster workloads (pods, deployments,
+        daemonsets, cronjobs) from within a container. This is often
+        a precursor to privilege escalation or lateral movement.
+      condition: >
+        container_entrypoint
+        and spawned_process
+        and proc.name = kubectl
+        and (proc.cmdline contains "get pods"
+             or proc.cmdline contains "get deployments"
+             or proc.cmdline contains "get daemonsets"
+             or proc.cmdline contains "get nodes"
+             or proc.cmdline contains "get namespaces"
+             or proc.cmdline contains "describe node")
+      output: >
+        Kubernetes workload reconnaissance (user=%user.name
+        container=%container.name image=%container.image
+        cmdline=%proc.cmdline pid=%proc.pid)
+      priority: NOTICE
+      tags: [k8s, container, discovery, mitre_discovery, T1069]
+---
+# =============================================================================
+# Falco Configuration (falco.yaml overrides)
+# =============================================================================
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: falco-config-engine
+  namespace: falco
+  labels:
+    app: falco
+    cyber-secure: "true"
+data:
+  falco.yaml: |
+    # Falco Configuration
+    json_output: true
+    json_include_output_property: true
+    json_include_tags_property: all
+    log_level: info
+    priority: debug
+    buffered_outputs: false
+    syscall_event_drops:
+      actions:
+        - log
+        - alert
+      rate: 0.03333
+      max_burst: 1
+      simutaneous_drops: 10
+    syscall_event_duration: .0
+    stdout_output:
+      enabled: false
+    webserver:
+      enabled: true
+      listen_port: 8765
+      k8s_healthz_endpoint: /healthz
+      ssl_enabled: false
+    grpc:
+      enabled: true
+      bind_address: "0.0.0.0:5060"
+      threadiness: 8
+    grpc_output:
+      enabled: true
+    base_syscalls:
+      enabled: false
+      custom_actionsets:
+        reprobe:
+          actions:
+            - reprobe
+    rules_file:
+      - /etc/falco/rules.d/custom_rules.yaml

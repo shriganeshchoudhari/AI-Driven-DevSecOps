@@ -1,0 +1,87 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: resilience-test-
+  namespace: chaos-engineering
+spec:
+  entrypoint: resilience-test
+  serviceAccountName: chaos-mesh
+  templates:
+    - name: resilience-test
+      steps:
+        - - name: inject-pod-kill
+            template: chaos-experiment
+            arguments:
+              parameters:
+                - name: experiment
+                  value: pod-kill
+        - - name: verify-service-health
+            template: verify-health
+        - - name: inject-network-delay
+            template: chaos-experiment
+            arguments:
+              parameters:
+                - name: experiment
+                  value: network-delay
+        - - name: verify-slos
+            template: verify-slos
+        - - name: cleanup
+            template: cleanup
+
+    - name: chaos-experiment
+      inputs:
+        parameters:
+          - name: experiment
+      resource:
+        action: create
+        manifest: |
+          apiVersion: chaos-mesh.org/v1alpha1
+          kind: Schedule
+          metadata:
+            name: "{{inputs.parameters.experiment}}-{{workflow.uid}}"
+            namespace: chaos-engineering
+          spec:
+            schedule: "now"
+            type: PodChaos
+
+    - name: verify-health
+      container:
+        image: curlimages/curl:8.4.0
+        command:
+          - sh
+          - -c
+          - |
+            for svc in frontend-service auth-service payment-service notification-service; do
+              echo "Checking $svc..."
+              if curl -sf --max-time 10 "http://$svc:8080/health" > /dev/null 2>&1; then
+                echo "  $svc: HEALTHY"
+              else
+                echo "  $svc: UNHEALTHY"
+                exit 1
+              fi
+            done
+            echo "All services healthy"
+
+    - name: verify-slos
+      container:
+        image: curlimages/curl:8.4.0
+        command:
+          - sh
+          - -c
+          - |
+            echo "Checking SLO compliance..."
+            curl -sf "http://prometheus-operated.monitoring:9090/api/v1/query" \
+              --data-urlencode 'query=slo:error_budget_remaining' \
+              -o /tmp/slo-result.json
+            echo "SLO check complete. Results:"
+            cat /tmp/slo-result.json
+
+    - name: cleanup
+      resource:
+        action: delete
+        manifest: |
+          apiVersion: chaos-mesh.org/v1alpha1
+          kind: Schedule
+          metadata:
+            name: "{{item}}-{{workflow.uid}}"
+            namespace: chaos-engineering

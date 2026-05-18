@@ -1,0 +1,94 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: platform-components
+  namespace: argocd
+spec:
+  generators:
+    - list:
+        elements:
+          - name: ingress-nginx
+            repo: https://kubernetes.github.io/ingress-nginx
+            chart: ingress-nginx
+            version: 4.8.0
+            namespace: ingress-nginx
+          - name: cert-manager
+            repo: https://charts.jetstack.io
+            chart: cert-manager
+            version: 1.13.0
+            namespace: cert-manager
+          - name: external-secrets
+            repo: https://charts.external-secrets.io
+            chart: external-secrets
+            version: 0.9.0
+            namespace: external-secrets
+          - name: prometheus-stack
+            repo: https://prometheus-community.github.io/helm-charts
+            chart: kube-prometheus-stack
+            version: 51.0.0
+            namespace: monitoring
+          - name: loki-stack
+            repo: https://grafana.github.io/helm-charts
+            chart: loki-stack
+            version: 2.9.0
+            namespace: monitoring
+          - name: tempo
+            repo: https://grafana.github.io/helm-charts
+            chart: tempo
+            version: 1.5.0
+            namespace: monitoring
+          - name: argo-rollouts
+            repo: https://argoproj.github.io/argo-helm
+            chart: argo-rollouts
+            version: 2.32.0
+            namespace: argocd
+          - name: kyverno
+            repo: https://kyverno.github.io/kyverno
+            chart: kyverno
+            version: 3.0.0
+            namespace: kyverno
+          - name: falco
+            repo: https://falcosecurity.github.io/charts
+            chart: falco
+            version: 3.8.0
+            namespace: falco
+          - name: keda
+            repo: https://kedacore.github.io/charts
+            chart: keda
+            version: 2.12.0
+            namespace: keda
+          - name: chaos-mesh
+            repo: https://charts.chaos-mesh.org
+            chart: chaos-mesh
+            version: 2.6.0
+            namespace: chaos-engineering
+  template:
+    metadata:
+      name: '{{name}}'
+      namespace: argocd
+    spec:
+      project: platform
+      source:
+        repoURL: '{{repo}}'
+        targetRevision: '{{version}}'
+        chart: '{{chart}}'
+        helm:
+          values: |
+            fullnameOverride: '{{name}}'
+          releaseName: '{{name}}'
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: '{{namespace}}'
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - ServerSideApply=true
+        retry:
+          limit: 3
+          backoff:
+            duration: 10s
+            factor: 2
+            maxDuration: 5m

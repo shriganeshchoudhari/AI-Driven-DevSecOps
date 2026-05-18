@@ -1,0 +1,39 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-cm
+  namespace: argocd
+data:
+  admin.enabled: "true"
+  statusbadge.enabled: "true"
+  users.anonymous.enabled: "false"
+  repositories: |
+    - url: https://github.com/org/aiops-platform-gitops
+      type: git
+      passwordSecret:
+        name: github-token
+        key: token
+      usernameSecret:
+        name: github-token
+        key: username
+  resource.customizations: |
+    admissionregistration.k8s.io/MutatingWebhookConfiguration:
+      ignoreDifferences: |
+        jsonPointers:
+        - /webhooks/0/clientConfig/caBundle
+    admissionregistration.k8s.io/ValidatingWebhookConfiguration:
+      ignoreDifferences: |
+        jsonPointers:
+        - /webhooks/0/clientConfig/caBundle
+  resource.exclusions: |
+    - apiGroups:
+      - kyverno.io
+      kinds:
+      - ClusterPolicy
+      - Policy
+    - apiGroups:
+      - cilium.io
+      kinds:
+      - CiliumNetworkPolicy
+  kustomize.buildOptions: "--load-restrictor LoadRestrictionsNone"
+  timeout.reconciliation: "180s"

@@ -1,0 +1,122 @@
+name: Performance Degradation Response Playbook
+version: "1.1"
+owner: Platform Engineering
+review_frequency: bi-weekly
+
+detection:
+  metrics:
+    - "P99 latency increase > 200ms from baseline"
+    - "Error rate > 1% over 5-minute window"
+    - "CPU throttling > 10% of container runtime"
+    - "Memory pressure > 85% of limit"
+    - "Connection pool exhaustion"
+    - "gRPC request duration > 500ms"
+  alerts:
+    - "HighLatencyP99"
+    - "HighErrorRate"
+    - "HighCPUThrottling"
+    - "OOMKillLoop"
+    - "ApdexScoreBelowThreshold"
+
+severity_triage:
+  critical:
+    conditions:
+      - "P99 latency > 5s"
+      - "Error rate > 10%"
+      - "Service is down for > 30s"
+    response_time: "5 minutes"
+    escalation: "On-call SRE + Platform Engineering Lead"
+  high:
+    conditions:
+      - "P99 latency > 2s"
+      - "Error rate > 5%"
+    response_time: "15 minutes"
+    escalation: "On-call SRE"
+  medium:
+    conditions:
+      - "P99 latency > 500ms"
+      - "Error rate > 1%"
+    response_time: "60 minutes"
+    escalation: "Business hours team"
+
+immediate_actions:
+  - id: "perf-01"
+    action: "Scale up deployment"
+    description: "Increase replica count to handle load"
+    command: "kubectl scale deployment/<service> --namespace=<namespace> --replicas=<current * 2>"
+    timeout: "30s"
+    condition: "CPU > 80% OR memory > 85%"
+  - id: "perf-02"
+    action: "Enable rate limiting"
+    description: "Activate rate limiting on ingress gateway"
+    command: "kubectl patch virtualservice <service> --namespace=<namespace> -p '{\"spec\":{\"http\":[{\"route\":[{\"destination\":{\"host\":\"<service>\"}}],\"retries\":{\"attempts\":3}}]}}'"
+    timeout: "10s"
+    condition: "Error rate > 5%"
+  - id: "perf-03"
+    action: "Adjust HPA thresholds"
+    description: "Lower CPU target to trigger earlier scaling"
+    command: "kubectl patch hpa <service> --namespace=<namespace> -p '{\"spec\":{\"metrics\":[{\"type\":\"Resource\",\"resource\":{\"name\":\"cpu\",\"target\":{\"type\":\"Utilization\",\"averageUtilization\":50}}}]}}'"
+    timeout: "10s"
+    condition: "Sustained CPU > 70% for 5m"
+  - id: "perf-04"
+    action: "Flush connection pools"
+    description: "Trigger service endpoint to reset connections"
+    command: "kubectl exec deploy/<service> -n <namespace> -- curl -X POST http://localhost:9090/-/reload"
+    timeout: "15s"
+    condition: "Connection pool exhaustion detected"
+  - id: "perf-05"
+    action: "Rollback recent deployment"
+    description: "If degradation follows a recent deploy, rollback immediately"
+    command: "kubectl rollout undo deployment/<service> --namespace=<namespace>"
+    timeout: "120s"
+    condition: "Deployment changed within last 30m AND error rate > 3%"
+
+investigation:
+  - id: "invest-01"
+    step: "Review deployment timeline"
+    command: "kubectl describe deployment <service> -n <namespace> | grep -A5 'RollingUpdateStrategy'; kubectl rollout history deployment/<service> -n <namespace>"
+  - id: "invest-02"
+    step: "Check resource usage trends"
+    query: 'histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{namespace="<namespace>",service="<service>"}[5m])) by (le))'
+  - id: "invest-03"
+    step: "Analyze slow database queries"
+    query: 'rate(pg_stat_activity_count{datname="<service>"}[5m])'
+  - id: "invest-04"
+    step: "Check for external dependency degradation"
+    command: "kubectl exec deploy/<service> -n <namespace> -- curl -so /dev/null -w '%{http_code}' http://<dependency>:8080/health"
+  - id: "invest-05"
+    step: "Inspect recent logs for error patterns"
+    command: "kubectl logs --tail=500 -l app=<service> -n <namespace> | grep -iE 'error|exception|timeout|refused|panic' | head -50"
+
+remediation:
+  - id: "fix-01"
+    action: "Increase resource limits"
+    description: "Temporarily raise CPU/memory limits to handle spike"
+    risk: "May cause node pressure; monitor cluster resources"
+  - id: "fix-02"
+    action: "Optimize database queries"
+    description: "Add missing indexes or tune query patterns"
+    risk: "Index creation locks tables on large datasets"
+  - id: "fix-03"
+    action: "Enable response caching"
+    description: "Configure CDN or in-memory cache for idempotent endpoints"
+    risk: "Stale data served if TTL misconfigured"
+  - id: "fix-04"
+    action: "Implement circuit breaker"
+    description: "Add resilience4j or istio circuit breaker to failing dependencies"
+    risk: "May mask underlying issues if threshold too high"
+  - id: "fix-05"
+    action: "Adjust HPA and VPA cooldown"
+    description: "Tune scale-up/down delay to match traffic patterns"
+    risk: "Too aggressive scaling wastes resources"
+
+postmortem:
+  required: true
+  template: "templates/postmortem.md"
+  deadline: "48 hours after incident resolution"
+  sections:
+    - "Summary of degradation timeline"
+    - "Root cause analysis (5 Whys)"
+    - "Metrics dashboard snapshot"
+    - "Code/configuration changes involved"
+    - "Action items with ownership"

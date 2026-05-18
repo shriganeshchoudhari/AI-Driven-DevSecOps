@@ -1,0 +1,177 @@
+# This file defines the owners for every directory in the repository.
+# https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+#
+# Syntax:
+# - Each line is a file pattern followed by one or more owners (teams or @users).
+# - The last matching pattern takes precedence.
+# - Wildcards and directory patterns are supported.
+# - Teams are referenced as @org/team-name.
+# - Users are referenced as @username.
+
+# Global owners for fallback
+* @org/platform-engineering
+
+# ──────────────────────────────────────────────
+# Platform Root
+# ──────────────────────────────────────────────
+
+# Top-level configuration files
+/.github/                                     @org/platform-engineering @org/devops
+/.github/workflows/                           @org/platform-engineering @org/devops
+/.github/actions/                             @org/platform-engineering @org/devops
+/.github/dependabot.yml                       @org/platform-engineering @org/devops
+/CODEOWNERS                                   @org/platform-engineering @org/tech-leads
+/AGENTS.md                                    @org/platform-engineering
+
+# Build and release configuration
+/Dockerfile                                   @org/platform-engineering @org/security-team
+/docker-compose.yml                           @org/platform-engineering
+/Makefile                                     @org/platform-engineering
+/.dockerignore                                @org/platform-engineering
+
+# ──────────────────────────────────────────────
+# Microservices
+# ──────────────────────────────────────────────
+
+# Frontend service
+/microservices/frontend-service/             @org/frontend-team @org/frontend-lead
+/microservices/frontend-service/Dockerfile    @org/frontend-team @org/security-team
+/microservices/frontend-service/src/          @org/frontend-team
+/microservices/frontend-service/tests/        @org/frontend-team @org/qa-team
+
+# Auth service
+/microservices/auth-service/                 @org/auth-team @org/auth-lead @org/security-team
+/microservices/auth-service/Dockerfile        @org/auth-team @org/security-team
+/microservices/auth-service/src/              @org/auth-team @org/security-team
+/microservices/auth-service/tests/            @org/auth-team @org/qa-team
+
+# Payment service
+/microservices/payment-service/              @org/payment-team @org/payment-lead
+/microservices/payment-service/Dockerfile     @org/payment-team @org/security-team
+/microservices/payment-service/src/           @org/payment-team
+/microservices/payment-service/tests/         @org/payment-team @org/qa-team
+
+# Notification service
+/microservices/notification-service/         @org/notification-team @org/notification-lead
+/microservices/notification-service/Dockerfile @org/notification-team @org/security-team
+/microservices/notification-service/src/      @org/notification-team
+/microservices/notification-service/tests/    @org/notification-team @org/qa-team
+
+# Shared libraries
+/microservices/shared/                       @org/platform-engineering
+
+# ──────────────────────────────────────────────
+# Infrastructure as Code
+# ──────────────────────────────────────────────
+
+# Terraform
+/terraform/                                   @org/devops @org/platform-engineering @org/security-team
+/terraform/modules/                           @org/devops
+/terraform/environments/                      @org/devops @org/platform-engineering
+/terraform/environments/prod/                 @org/devops @org/tech-leads
+/terraform/environments/staging/              @org/devops
+/terraform/environments/dev/                  @org/devops
+
+# Kubernetes
+/kubernetes/                                  @org/devops @org/platform-engineering
+/kubernetes/namespaces/                       @org/devops
+/kubernetes/network-policies/                 @org/devops @org/security-team
+
+# Helm Charts
+/charts/                                      @org/devops @org/platform-engineering
+/charts/frontend-service/                     @org/frontend-team @org/devops
+/charts/auth-service/                         @org/auth-team @org/devops
+/charts/payment-service/                      @org/payment-team @org/devops
+/charts/notification-service/                 @org/notification-team @org/devops
+
+# ArgoCD
+/argocd/                                      @org/devops @org/platform-engineering
+/argocd/overlays/                             @org/devops
+/argocd/projects/                             @org/devops
+/argocd/clusters/                             @org/devops
+
+# Kustomize
+/kustomize/                                   @org/devops
+
+# ──────────────────────────────────────────────
+# Security
+# ──────────────────────────────────────────────
+
+/security/                                    @org/security-team @org/platform-engineering
+/policies/                                    @org/security-team @org/platform-engineering
+/policies/conftest/                           @org/security-team @org/devops
+/policies/opa/                                @org/security-team @org/devops
+/policies/kyverno/                            @org/security-team @org/devops
+
+# Secret scanning configuration
+.gitleaks.toml                                @org/security-team @org/platform-engineering
+.semgrep/                                     @org/security-team @org/platform-engineering
+.semgrep.yml                                  @org/security-team @org/platform-engineering
+.trivyignore                                  @org/security-team @org/platform-engineering
+.terrascan.toml                               @org/security-team @org/devops
+
+# ──────────────────────────────────────────────
+# CI/CD
+# ──────────────────────────────────────────────
+
+# Workflow definitions
+/.github/workflows/01-ci-build.yml            @org/platform-engineering @org/devops
+/.github/workflows/02-cd-deploy.yml           @org/platform-engineering @org/devops @org/tech-leads
+/.github/workflows/03-security-scan.yml       @org/security-team @org/platform-engineering
+/.github/workflows/04-rollback.yml            @org/platform-engineering @org/devops
+/.github/workflows/05-sbom-generation.yml     @org/security-team @org/platform-engineering
+/.github/workflows/06-cleanup.yml             @org/devops
+
+# Composite actions
+/.github/actions/oidc-login/                  @org/platform-engineering @org/security-team
+/.github/actions/ecr-build-push/              @org/platform-engineering
+/.github/actions/deploy-gitops/               @org/platform-engineering @org/devops
+
+# ──────────────────────────────────────────────
+# Documentation
+# ──────────────────────────────────────────────
+
+/docs/                                        @org/platform-engineering @org/tech-writers
+/README.md                                    @org/platform-engineering @org/tech-leads
+/ADRs/                                        @org/platform-engineering @org/tech-leads
+
+# ──────────────────────────────────────────────
+# Testing
+# ──────────────────────────────────────────────
+
+/tests/                                       @org/qa-team @org/platform-engineering
+/tests/e2e/                                   @org/qa-team
+/tests/integration/                           @org/qa-team @org/devops
+/tests/load/                                  @org/qa-team @org/platform-engineering
+
+# ──────────────────────────────────────────────
+# Configuration and Scripts
+# ──────────────────────────────────────────────
+
+/scripts/                                     @org/devops @org/platform-engineering
+/configs/                                     @org/devops @org/platform-engineering
+/hooks/                                       @org/platform-engineering
+/tools/                                       @org/platform-engineering
+
+# ──────────────────────────────────────────────
+# Audit and Compliance
+# ──────────────────────────────────────────────
+
+/compliance/                                  @org/security-team @org/compliance-team
+/audit/                                       @org/security-team @org/compliance-team
+/slos/                                        @org/platform-engineering @org/sre-team
+
+# ──────────────────────────────────────────────
+# Sensitive files (require senior approval)
+# ──────────────────────────────────────────────
+
+**/*.pem                                      @org/tech-leads @org/security-team
+**/*.key                                      @org/tech-leads @org/security-team
+**/*.cert                                     @org/tech-leads @org/security-team
+**/secrets*                                   @org/tech-leads @org/security-team
+**/secret*                                    @org/tech-leads @org/security-team
+**/*credentials*                              @org/tech-leads @org/security-team
+**/*.tfvars                                   @org/devops @org/platform-engineering
+**/*.tfstate*                                 @org/devops @org/platform-engineering
+**/values-prod.yaml                           @org/devops @org/tech-leads
+**/values-staging.yaml                        @org/devops

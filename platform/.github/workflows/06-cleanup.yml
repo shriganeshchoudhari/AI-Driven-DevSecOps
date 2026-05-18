@@ -1,0 +1,335 @@
+name: 06 - Environment Cleanup
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to clean up'
+        required: true
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+          - all
+      cleanup-ecr:
+        description: 'Clean up old ECR images'
+        required: false
+        type: boolean
+        default: true
+      cleanup-s3:
+        description: 'Clean up old SBOMs from S3'
+        required: false
+        type: boolean
+        default: true
+      cleanup-cache:
+        description: 'Clean up old build cache'
+        required: false
+        type: boolean
+        default: true
+      retention-days:
+        description: 'Retention period in days (default: 90)'
+        required: false
+        type: number
+        default: 90
+      dry-run:
+        description: 'Dry run (no actual deletion)'
+        required: false
+        type: boolean
+        default: false
+  schedule:
+    - cron: '0 4 * * 0'
+
+concurrency:
+  group: cleanup-${{ inputs.environment || 'all' }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-west-2
+  AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-west-2.amazonaws.com
+  S3_SBOM_BUCKET: ${{ vars.S3_SBOM_BUCKET || 'aiops-sbom-store' }}
+  S3_SECURITY_BUCKET: ${{ vars.S3_SECURITY_BUCKET || 'aiops-security-audit' }}
+  CLEANUP_ENVIRONMENT: ${{ inputs.environment || 'all' }}
+  RETENTION_DAYS: ${{ inputs.retention-days || 90 }}
+  DRY_RUN: ${{ inputs.dry-run || false }}
+  CLEANUP_DATE: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+permissions:
+  id-token: write
+  contents: read
+  actions: write
+
+jobs:
+  cleanup-ecr-images:
+    name: Clean Up Old ECR Images
+    if: inputs.cleanup-ecr != false
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - frontend-service
+          - auth-service
+          - payment-service
+          - notification-service
+    steps:
+      - name: Authenticate to AWS via OIDC
+        uses: ./.github/actions/oidc-login
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-arn: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/github-actions-oidc-cleanup-role
+          role-session-name: Cleanup-ECR-${{ matrix.service }}
+
+      - name: List old ECR images
+        id: list-images
+        shell: bash
+        run: |
+          REPO="${{ matrix.service }}"
+          CUTOFF=$(date -d "-${{ env.RETENTION_DAYS }} days" +%s)
+          echo "Repository: $REPO"
+          echo "Retention: ${{ env.RETENTION_DAYS }} days"
+          echo "Cutoff timestamp: $CUTOFF ($(date -d @$CUTOFF))"
+          echo "Dry run: ${{ env.DRY_RUN }}"
+
+          # List all images in the repository
+          IMAGES=$(aws ecr describe-images \
+            --repository-name "$REPO" \
+            --region ${{ env.AWS_REGION }} \
+            --query 'imageDetails[?imagePushedAt < `'$(echo $CUTOFF)'`]' \
+            --output json 2>/dev/null)
+
+          OLD_COUNT=$(echo "$IMAGES" | jq length)
+          echo "Found $OLD_COUNT images older than ${{ env.RETENTION_DAYS }} days"
+
+          if [ "$OLD_COUNT" -eq 0 ]; then
+            echo "No old images to clean up for $REPO"
+            echo "CLEANED=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Extract image digests (excluding those tagged "latest" or "stable")
+          IMAGE_DIGESTS=$(echo "$IMAGES" | jq -r '[.[] | select(.imageTags == null or (.imageTags | index("latest") | not) and (.imageTags | index("stable") | not)) | .imageDigest] | .[]')
+
+          if [ -z "$IMAGE_DIGESTS" ]; then
+            echo "All old images have protected tags (latest/stable). Nothing to delete."
+            echo "CLEANED=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Images to delete:"
+          echo "$IMAGE_DIGESTS" | wc -l
+
+          if [ "${{ env.DRY_RUN }}" = "true" ]; then
+            echo "::notice::DRY RUN: Would delete $(echo "$IMAGE_DIGESTS" | wc -l) images from $REPO"
+            echo "$IMAGE_DIGESTS" > ${{ runner.temp }}/ecr-cleanup-${{ matrix.service }}-dryrun.txt
+            echo "CLEANED=0" >> "$GITHUB_OUTPUT"
+          else
+            echo "Deleting old images from $REPO..."
+            DELETE_COUNT=0
+            TOTAL=$(echo "$IMAGE_DIGESTS" | wc -l)
+
+            echo "$IMAGE_DIGESTS" | while read -r digest; do
+              if [ -n "$digest" ]; then
+                aws ecr batch-delete-image \
+                  --repository-name "$REPO" \
+                  --region ${{ env.AWS_REGION }} \
+                  --image-ids imageDigest="$digest" \
+                  --output text \
+                  --query 'imageIds[0].imageDigest' && \
+                  echo "Deleted: $digest"
+              fi
+            done
+
+            echo "CLEANED=$TOTAL" >> "$GITHUB_OUTPUT"
+            echo "::notice::Cleaned up $TOTAL images from $REPO"
+          fi
+
+  cleanup-s3-sboms:
+    name: Clean Up Old S3 SBOMs
+    if: inputs.cleanup-s3 != false
+    runs-on: ubuntu-latest
+    steps:
+      - name: Authenticate to AWS via OIDC
+        uses: ./.github/actions/oidc-login
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-arn: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/github-actions-oidc-cleanup-role
+          role-session-name: Cleanup-S3-SBOMs
+
+      - name: List and clean up old SBOM objects
+        shell: bash
+        run: |
+          CUTOFF_DATE=$(date -d "-${{ env.RETENTION_DAYS }} days" +%Y-%m-%d)
+          echo "Cleaning up SBOMs older than ${{ env.RETENTION_DAYS }} days (before $CUTOFF_DATE)"
+          echo "Dry run: ${{ env.DRY_RUN }}"
+
+          # List all objects in the SBOM bucket
+          OLD_OBJECTS=$(aws s3api list-objects \
+            --bucket ${{ env.S3_SBOM_BUCKET }} \
+            --region ${{ env.AWS_REGION }} \
+            --query "Contents[?LastModified < '$CUTOFF_DATE'].Key" \
+            --output text)
+
+          if [ -z "$OLD_OBJECTS" ] || [ "$OLD_OBJECTS" = "None" ]; then
+            echo "No old SBOM objects found for cleanup"
+            exit 0
+          fi
+
+          OBJECT_COUNT=$(echo "$OLD_OBJECTS" | tr '\t' '\n' | wc -l)
+          echo "Found $OBJECT_COUNT objects older than ${{ env.RETENTION_DAYS }} days"
+          echo "$OLD_OBJECTS" | tr '\t' '\n'
+
+          if [ "${{ env.DRY_RUN }}" = "true" ]; then
+            echo "::notice::DRY RUN: Would delete $OBJECT_COUNT objects from s3://${{ env.S3_SBOM_BUCKET }}"
+          else
+            echo "$OLD_OBJECTS" | tr '\t' '\n' | while read -r key; do
+              if [ -n "$key" ]; then
+                aws s3 rm "s3://${{ env.S3_SBOM_BUCKET }}/$key" \
+                  --region ${{ env.AWS_REGION }}
+                echo "Deleted: $key"
+              fi
+            done
+            echo "::notice::Cleaned up $OBJECT_COUNT old SBOM objects from S3"
+          fi
+
+      - name: Clean up old security scan artifacts from S3
+        shell: bash
+        run: |
+          CUTOFF_DATE=$(date -d "-${{ env.RETENTION_DAYS }} days" +%Y-%m-%d)
+          echo "Cleaning up security scan artifacts in S3 older than $CUTOFF_DATE..."
+
+          OLD_SCANS=$(aws s3api list-objects \
+            --bucket ${{ env.S3_SECURITY_BUCKET }} \
+            --region ${{ env.AWS_REGION }} \
+            --query "Contents[?LastModified < '$CUTOFF_DATE'].Key" \
+            --output text 2>/dev/null)
+
+          if [ -z "$OLD_SCANS" ] || [ "$OLD_SCANS" = "None" ]; then
+            echo "No old security scan artifacts found"
+            exit 0
+          fi
+
+          SCAN_COUNT=$(echo "$OLD_SCANS" | tr '\t' '\n' | wc -l)
+
+          if [ "${{ env.DRY_RUN }}" = "true" ]; then
+            echo "::notice::DRY RUN: Would delete $SCAN_COUNT security scan objects from s3://${{ env.S3_SECURITY_BUCKET }}"
+          else
+            echo "$OLD_SCANS" | tr '\t' '\n' | while read -r key; do
+              if [ -n "$key" ]; then
+                aws s3 rm "s3://${{ env.S3_SECURITY_BUCKET }}/$key" \
+                  --region ${{ env.AWS_REGION }}
+              fi
+            done
+            echo "::notice::Cleaned up $SCAN_COUNT old security scan artifacts"
+          fi
+
+  cleanup-build-cache:
+    name: Clean Up Old Build Cache
+    if: inputs.cleanup-cache != false
+    runs-on: ubuntu-latest
+    steps:
+      - name: List GitHub Actions caches
+        shell: bash
+        run: |
+          echo "Listing GitHub Actions caches..."
+          CACHES=$(gh actions cache list \
+            --repo ${{ github.repository }} \
+            --json id,key,createdAt,sizeInBytes \
+            --limit 100 2>/dev/null || echo "[]")
+
+          OLD_CACHES=$(echo "$CACHES" | jq -r \
+            --arg cutoff "$(date -d "-${{ env.RETENTION_DAYS }} days" -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '[.[] | select(.createdAt < $cutoff) | .id] | .[]')
+
+          TOTAL_SIZE=$(echo "$CACHES" | jq \
+            --arg cutoff "$(date -d "-${{ env.RETENTION_DAYS }} days" -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '[.[] | select(.createdAt < $cutoff) | .sizeInBytes] | add // 0')
+
+          TOTAL_SIZE_MB=$((TOTAL_SIZE / 1024 / 1024))
+
+          if [ -z "$OLD_CACHES" ]; then
+            echo "No old caches to clean up"
+            echo "CACHE_COUNT=0" >> "$GITHUB_OUTPUT"
+            echo "CACHE_SIZE_MB=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          CACHE_COUNT=$(echo "$OLD_CACHES" | wc -l)
+          echo "Found $CACHE_COUNT old caches totaling $TOTAL_SIZE_MB MB"
+          echo "CACHE_COUNT=$CACHE_COUNT" >> "$GITHUB_OUTPUT"
+          echo "CACHE_SIZE_MB=$TOTAL_SIZE_MB" >> "$GITHUB_OUTPUT"
+
+          if [ "${{ env.DRY_RUN }}" = "true" ]; then
+            echo "::notice::DRY RUN: Would delete $CACHE_COUNT caches ($TOTAL_SIZE_MB MB)"
+          else
+            echo "$OLD_CACHES" | while read -r id; do
+              if [ -n "$id" ]; then
+                gh actions cache delete "$id" \
+                  --repo ${{ github.repository }} 2>/dev/null || true
+                echo "Deleted cache: $id"
+              fi
+            done
+            echo "::notice::Deleted $CACHE_COUNT caches ($TOTAL_SIZE_MB MB)"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  record-audit-log:
+    name: Record Cleanup Audit Log
+    needs:
+      - cleanup-ecr-images
+      - cleanup-s3-sboms
+      - cleanup-build-cache
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Authenticate to AWS via OIDC
+        uses: ./.github/actions/oidc-login
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-arn: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/github-actions-oidc-cleanup-role
+          role-session-name: Cleanup-Audit
+
+      - name: Record cleanup audit log to DynamoDB
+        shell: bash
+        env:
+          TABLE: ${{ vars.CLEANUP_AUDIT_TABLE || 'aiops-cleanup-audit' }}
+        run: |
+          TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+          aws dynamodb put-item \
+            --table-name "$TABLE" \
+            --item "{
+              \"cleanupId\": {\"S\": \"cleanup-${{ github.run_id }}\"},
+              \"timestamp\": {\"S\": \"$TIMESTAMP\"},
+              \"environment\": {\"S\": \"${{ env.CLEANUP_ENVIRONMENT }}\"},
+              \"triggeredBy\": {\"S\": \"${{ github.actor }}\"},
+              \"retentionDays\": {\"N\": \"${{ env.RETENTION_DAYS }}\"},
+              \"dryRun\": {\"BOOL\": ${{ env.DRY_RUN }}},
+              \"runUrl\": {\"S\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"},
+              \"status\": {\"S\": \"${{ needs.cleanup-ecr-images.result }}\"},
+              \"actions\": {
+                \"M\": {
+                  \"ecrCleanup\": {\"S\": \"${{ needs.cleanup-ecr-images.result }}\"},
+                  \"s3Cleanup\": {\"S\": \"${{ needs.cleanup-s3-sboms.result }}\"},
+                  \"cacheCleanup\": {\"S\": \"${{ needs.cleanup-build-cache.result }}\"}
+                }
+              }
+            }" \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Log cleanup summary
+        shell: bash
+        run: |
+          echo "::group::Cleanup Summary"
+          echo "Environment: ${{ env.CLEANUP_ENVIRONMENT }}"
+          echo "Retention: ${{ env.RETENTION_DAYS }} days"
+          echo "Dry Run: ${{ env.DRY_RUN }}"
+          echo ""
+          echo "ECR Cleanup: ${{ needs.cleanup-ecr-images.result }}"
+          echo "S3 Cleanup: ${{ needs.cleanup-s3-sboms.result }}"
+          echo "Cache Cleanup: ${{ needs.cleanup-build-cache.result }}"
+          echo ""
+          echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          echo "::endgroup::"

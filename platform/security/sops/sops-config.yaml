@@ -1,0 +1,98 @@
+---
+# =============================================================================
+# SOPS (Secrets OPerationS) Configuration
+# This file should be placed at the repository root as .sops.yaml
+# =============================================================================
+
+creation_rules:
+  # Default rule: encrypt all *.enc.yaml files with dev key
+  - path_regex: .*\.enc\.yaml
+    kms: arn:aws:kms:us-west-2:123456789012:alias/sops-dev-key
+    aws_profile: default
+    pgp: ""
+    encrypted_regex: "^(data|stringData)$"
+    key_groups:
+      - kms:
+          - arn: arn:aws:kms:us-west-2:123456789012:key/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee
+            role: arn:aws:iam::123456789012:role/sops-encryption-role-dev
+        pgp:
+          - fp: "ABCDEF1234567890ABCDEF1234567890ABCDEF12"
+        age: []
+
+  # Production environments: use production KMS key with stronger controls
+  - path_regex: environments/prod/.*\.(yaml|json|env)$
+    kms: arn:aws:kms:us-west-2:123456789012:alias/sops-prod-key
+    aws_profile: prod
+    encrypted_regex: "^(data|stringData|password|secret|api_key|token|private_key)$"
+    key_groups:
+      - kms:
+          - arn: arn:aws:kms:us-west-2:123456789012:key/bbbbbbbb-cccc-dddd-eeee-ffffffffffff
+            role: arn:aws:iam::123456789012:role/sops-encryption-role-prod
+            context:
+              environment: production
+              compliance: pci
+          - arn: arn:aws:kms:eu-west-1:123456789012:key/cccccccc-dddd-eeee-ffff-000000000000
+            role: arn:aws:iam::123456789012:role/sops-encryption-role-dr
+            context:
+              environment: production
+        pgp:
+          - fp: "FEDCBA0987654321FEDCBA0987654321FEDCBA09"
+        age: []
+
+  # Development environments: use dev KMS key
+  - path_regex: environments/dev/.*\.(yaml|json|env)$
+    kms: arn:aws:kms:us-west-2:123456789012:alias/sops-dev-key
+    aws_profile: dev
+    encrypted_regex: "^(data|stringData)$"
+    key_groups:
+      - kms:
+          - arn: arn:aws:kms:us-west-2:123456789012:key/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee
+            role: arn:aws:iam::123456789012:role/sops-encryption-role-dev
+        pgp: []
+        age: []
+
+  # Staging environments
+  - path_regex: environments/staging/.*\.(yaml|json|env)$
+    kms: arn:aws:kms:us-west-2:123456789012:alias/sops-staging-key
+    aws_profile: staging
+    encrypted_regex: "^(data|stringData)$"
+    key_groups:
+      - kms:
+          - arn: arn:aws:kms:us-west-2:123456789012:key/dddddddd-eeee-ffff-0000-111111111111
+            role: arn:aws:iam::123456789012:role/sops-encryption-role-staging
+        pgp: []
+        age: []
+
+  # PCI-DSS scoped secrets require additional controls
+  - path_regex: .*pci.*\.(yaml|json|env)$
+    kms:
+      - arn: arn:aws:kms:us-west-2:123456789012:alias/sops-pci-key
+        role: arn:aws:iam::123456789012:role/sops-encryption-role-pci
+    aws_profile: pci
+    encrypted_regex: "^(data|stringData)$"
+    key_groups:
+      - kms:
+          - arn: arn:aws:kms:us-west-2:123456789012:key/eeeeeeee-ffff-0000-1111-222222222222
+            role: arn:aws:iam::123456789012:role/sops-encryption-role-pci
+        pgp:
+          - fp: "1111222233334444111122223333444411112222"
+        age: []
+
+  # Terraform state encryption
+  - path_regex: terraform/.*\.tfstate$
+    kms: arn:aws:kms:us-west-2:123456789012:alias/sops-terraform-key
+    aws_profile: default
+    encrypted_regex: "^(output|sensitive|value)$"
+    key_groups:
+      - kms:
+          - arn: arn:aws:kms:us-west-2:123456789012:key/ffffffff-0000-1111-2222-333333333333
+            role: arn:aws:iam::123456789012:role/sops-terraform-role
+---
+# =============================================================================
+# SOPS Age Key Configuration (for local development without AWS)
+# =============================================================================
+# Uncomment and configure for age-based encryption:
+# age_key: |
+#   # created: 2026-01-15T10:00:00Z
+#   # public key: age1abc123def456ghi789jkl012mno345pqr678stu901vwx234yz
+#   AGE-SECRET-KEY-1ABC123DEF456GHI789JKL012MNO345PQR678STU901VWX234YZ

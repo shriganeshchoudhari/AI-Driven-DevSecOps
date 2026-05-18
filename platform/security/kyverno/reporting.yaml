@@ -1,0 +1,230 @@
+---
+# =============================================================================
+# Kyverno Policy Reporter & Reporting Configuration
+# =============================================================================
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: policy-reporter-config
+  namespace: kyverno
+  labels:
+    app: policy-reporter
+    cyber-secure: "true"
+data:
+  config.yaml: |
+    core:
+      version: "1.6.0"
+      minimumSeverity: "info"
+      sources:
+        - kyverno
+        - falco
+        - opa
+      skipExistingOnStartup: false
+      leaderElection:
+        enabled: true
+      metrics:
+        enabled: true
+        port: 8080
+    kyverno:
+      enabled: true
+      host: http://kyverno-svc.kyverno.svc.cluster.local:443
+      checkInterval: 30s
+      minimumSeverity: medium
+      skipNamespaces:
+        - kube-system
+        - kube-public
+      report:
+        include: [ClusterPolicyReport, PolicyReport]
+    targets:
+      ui:
+        enabled: true
+        host: "0.0.0.0"
+        port: 8082
+        minimumSeverity: warning
+      webhook:
+        enabled: true
+        host: http://aiops-engine.aiops-engine:8080/api/v1/policy/reports
+        skipTLS: true
+      slack:
+        enabled: true
+        webhook: ""
+        minimumSeverity: warning
+        customFields:
+          environment: production
+      elasticsearch:
+        enabled: true
+        host: http://elasticsearch-master.logging:9200
+        index: kyverno-policy-reports
+        rotation: daily
+      prometheus:
+        enabled: true
+        port: 8081
+        metrics:
+          - policy_report_summary
+          - policy_report_results
+---
+# =============================================================================
+# Policy Reporter - Cluster Role & Service Account
+# =============================================================================
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: policy-reporter
+  namespace: kyverno
+  annotations:
+    cyber-secure: "true"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: policy-reporter
+  labels:
+    cyber-secure: "true"
+rules:
+  - apiGroups: ["wgpolicyk8s.io"]
+    resources: ["policyreports", "clusterpolicyreports"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods", "namespaces", "nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["kyverno.io"]
+    resources: ["clusterpolicies", "policies"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: policy-reporter
+subjects:
+  - kind: ServiceAccount
+    name: policy-reporter
+    namespace: kyverno
+roleRef:
+  kind: ClusterRole
+  name: policy-reporter
+  apiGroup: rbac.authorization.k8s.io
+---
+# =============================================================================
+# Policy Reporter UI Service
+# =============================================================================
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: policy-reporter-ui
+  namespace: kyverno
+  labels:
+    app: policy-reporter-ui
+    cyber-secure: "true"
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8081"
+spec:
+  selector:
+    app: policy-reporter
+  ports:
+    - name: ui
+      port: 8082
+      targetPort: 8082
+      protocol: TCP
+    - name: metrics
+      port: 8081
+      targetPort: 8081
+      protocol: TCP
+---
+# =============================================================================
+# Severity Labels for Kyverno Policies (via ConfigMap)
+# =============================================================================
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kyverno-severity-labels
+  namespace: kyverno
+  labels:
+    cyber-secure: "true"
+data:
+  severity-map.yaml: |
+    policies:
+      require-pod-security-restricted:
+        severity: high
+        category: "Pod Security Standards"
+        remediation: "Review pod securityContext and ensure compliance with restricted PSS"
+      require-image-signature:
+        severity: critical
+        category: "Supply Chain Security"
+        remediation: "Sign images with Cosign before deploying. Use: cosign sign <image>"
+      block-registry-external:
+        severity: critical
+        category: "Supply Chain Security"
+        remediation: "Migrate images to approved ECR registry"
+      require-resource-limits:
+        severity: medium
+        category: "Workload Management"
+        remediation: "Add resources.requests and resources.limits to all containers"
+      require-readiness-probe:
+        severity: high
+        category: "Workload Management"
+        remediation: "Add a readinessProbe to the deployment spec"
+      require-liveness-probe:
+        severity: high
+        category: "Workload Management"
+        remediation: "Add a livenessProbe to the deployment spec"
+      block-privileged-escalation:
+        severity: critical
+        category: "Pod Security"
+        remediation: "Set allowPrivilegeEscalation: false in container securityContext"
+      block-host-network:
+        severity: high
+        category: "Pod Security"
+        remediation: "Remove hostNetwork: true from pod spec"
+      block-host-path:
+        severity: critical
+        category: "Pod Security"
+        remediation: "Replace hostPath volume with PVC, ConfigMap, or emptyDir"
+      block-node-port-services:
+        severity: high
+        category: "Network Security"
+        remediation: "Change service type to ClusterIP or LoadBalancer"
+      require-non-root-user:
+        severity: high
+        category: "Pod Security"
+        remediation: "Set runAsNonRoot: true and runAsUser to a non-zero value"
+      require-readonly-root:
+        severity: high
+        category: "Pod Security"
+        remediation: "Set readOnlyRootFilesystem: true in container securityContext"
+      block-default-serviceaccount:
+        severity: high
+        category: "Security Best Practices"
+        remediation: "Create a dedicated ServiceAccount and reference it in pod spec"
+      require-network-policy:
+        severity: critical
+        category: "Network Security"
+        remediation: "Apply a NetworkPolicy to this namespace"
+      block-loadbalancer-external:
+        severity: medium
+        category: "Network Security"
+        remediation: "Use ClusterIP with Ingress instead of LoadBalancer"
+      allowed-annotations:
+        severity: low
+        category: "Security Best Practices"
+        remediation: "Remove disallowed annotations"
+      require-pod-anti-affinity:
+        severity: medium
+        category: "High Availability"
+        remediation: "Add podAntiAffinity rules to deployment spec"
+      validate-env-vars:
+        severity: medium
+        category: "Security Best Practices"
+        remediation: "Use valueFrom.secretKeyRef for sensitive environment variables"
+      block-downward-api-mounts:
+        severity: medium
+        category: "Pod Security"
+        remediation: "Remove downwardAPI volume and use env fieldRef instead"
+      require-service-mesh-injection:
+        severity: high
+        category: "Service Mesh"
+        remediation: "Add label istio-injection: enabled to the namespace"

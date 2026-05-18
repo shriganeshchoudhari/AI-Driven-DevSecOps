@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frontend-service-config
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "frontend-service.labels" . | nindent 4 }}
+data:
+  {{- range $key, $value := .Values.env }}
+  {{ $key }}: {{ $value | quote }}
+  {{- end }}
+  NODE_NAME: {{ include "frontend-service.fullname" . | quote }}

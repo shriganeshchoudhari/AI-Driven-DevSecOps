@@ -1,0 +1,41 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: network-delay-auth
+  namespace: chaos-engineering
+spec:
+  action: delay
+  mode: all
+  selector:
+    namespaces:
+      - auth-service
+    labelSelectors:
+      app: auth-service
+  delay:
+    latency: "300ms"
+    correlation: "50"
+    jitter: "50ms"
+  duration: "180s"
+  scheduler:
+    cron: "@every 48h"
+---
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: network-partition-frontend
+  namespace: chaos-engineering
+spec:
+  action: partition
+  mode: one
+  selector:
+    namespaces:
+      - frontend-service
+    labelSelectors:
+      app: frontend-service
+  direction: both
+  target:
+    mode: all
+    selector:
+      namespaces:
+        - payment-service
+  duration: "60s"

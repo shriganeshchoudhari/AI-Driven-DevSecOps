@@ -1,0 +1,57 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: HTTPChaos
+metadata:
+  name: http-abort-experiment
+  namespace: chaos-engineering
+spec:
+  mode: all
+  selector:
+    namespaces:
+      - frontend-service
+    labelSelectors:
+      app: frontend-service
+  target: Request
+  port: 8080
+  abort: true
+  duration: "120s"
+  scheduler:
+    cron: "@every 72h"
+---
+apiVersion: chaos-mesh.org/v1alpha1
+kind: HTTPChaos
+metadata:
+  name: http-delay-payment
+  namespace: chaos-engineering
+spec:
+  mode: all
+  selector:
+    namespaces:
+      - payment-service
+    labelSelectors:
+      app: payment-service
+  target: Response
+  port: 8080
+  delay: "500ms"
+  duration: "90s"
+  scheduler:
+    cron: "@every 96h"
+---
+apiVersion: chaos-mesh.org/v1alpha1
+kind: HTTPChaos
+metadata:
+  name: http-error-rate-auth
+  namespace: chaos-engineering
+spec:
+  mode: one
+  selector:
+    namespaces:
+      - auth-service
+    labelSelectors:
+      app: auth-service
+  target: Request
+  port: 8080
+  replace:
+    code: 503
+  duration: "60s"
+  scheduler:
+    cron: "@every 48h"

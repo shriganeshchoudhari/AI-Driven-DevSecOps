@@ -1,0 +1,19 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: StressChaos
+metadata:
+  name: cpu-stress-payment
+  namespace: chaos-engineering
+spec:
+  mode: one
+  selector:
+    namespaces:
+      - payment-service
+    labelSelectors:
+      app: payment-service
+  stressors:
+    cpu:
+      workers: 2
+      load: 80
+  duration: "300s"
+  scheduler:
+    cron: "@every 72h"

@@ -1,0 +1,113 @@
+version: "3.9"
+
+services:
+  frontend-service:
+    build:
+      context: ./microservices/frontend-service
+      dockerfile: Dockerfile
+    container_name: frontend-service
+    ports:
+      - "8080:8080"
+    environment:
+      - ENVIRONMENT=development
+      - NAMESPACE=frontend-service
+      - AUTH_SERVICE_URL=http://auth-service:8080
+      - PAYMENT_SERVICE_URL=http://payment-service:8080
+      - OTLP_ENDPOINT=http://tempo:4317
+    depends_on:
+      auth-service:
+        condition: service_started
+      payment-service:
+        condition: service_started
+    networks:
+      - platform-net
+
+  auth-service:
+    build:
+      context: ./microservices/auth-service
+      dockerfile: Dockerfile
+    container_name: auth-service
+    ports:
+      - "8081:8080"
+    environment:
+      - ENVIRONMENT=development
+      - NAMESPACE=auth-service
+      - DATABASE_URL=sqlite:///./auth.db
+      - SECRET_KEY=dev-secret-key-change-in-production
+      - OTLP_ENDPOINT=http://tempo:4317
+    volumes:
+      - auth-data:/app
+    networks:
+      - platform-net
+
+  payment-service:
+    build:
+      context: ./microservices/payment-service
+      dockerfile: Dockerfile
+    container_name: payment-service
+    ports:
+      - "8082:8080"
+    environment:
+      - ENVIRONMENT=development
+      - NAMESPACE=payment-service
+      - DATABASE_URL=sqlite:///./payments.db
+      - OTLP_ENDPOINT=http://tempo:4317
+    volumes:
+      - payment-data:/app
+    networks:
+      - platform-net
+
+  notification-service:
+    build:
+      context: ./microservices/notification-service
+      dockerfile: Dockerfile
+    container_name: notification-service
+    ports:
+      - "8083:8080"
+    environment:
+      - ENVIRONMENT=development
+      - NAMESPACE=notification-service
+      - DATABASE_URL=sqlite:///./notifications.db
+      - OTLP_ENDPOINT=http://tempo:4317
+    volumes:
+      - notification-data:/app
+    networks:
+      - platform-net
+
+  tempo:
+    image: grafana/tempo:2.2.0
+    container_name: tempo
+    command: ["-config.file=/etc/tempo.yaml"]
+    ports:
+      - "4317:4317"
+      - "3200:3200"
+    volumes:
+      - ./tempo.yaml:/etc/tempo.yaml
+      - tempo-data:/tmp/tempo
+    networks:
+      - platform-net
+
+  grafana:
+    image: grafana/grafana:10.2.0
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+    volumes:
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources
+    depends_on:
+      - tempo
+    networks:
+      - platform-net
+
+networks:
+  platform-net:
+    driver: bridge
+
+volumes:
+  auth-data:
+  payment-data:
+  notification-data:
+  tempo-data:

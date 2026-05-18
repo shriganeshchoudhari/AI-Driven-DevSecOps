@@ -1,0 +1,536 @@
+groups:
+  - name: kubernetes_alerts
+    interval: 30s
+    rules:
+      - alert: KubernetesPodCrashLooping
+        expr: |
+          increase(kube_pod_container_status_restarts_total[5m]) > 3
+        for: 5m
+        labels:
+          severity: critical
+          team: sre
+          channel: "#alerts-k8s"
+        annotations:
+          summary: "Pod {{ $labels.pod }} is crash looping"
+          description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} has restarted {{ $value }} times in 5 minutes"
+          runbook: "https://runbook.aiops-platform.internal/incidents/pod-crash-loop"
+          dashboard: "https://grafana.aiops-platform.internal/d/kubernetes-pods"
+
+      - alert: KubernetesPodNotReady
+        expr: |
+          sum by (namespace, pod) (kube_pod_status_phase{phase=~"Pending|Failed|Unknown"}) > 0
+        for: 10m
+        labels:
+          severity: critical
+          team: sre
+          channel: "#alerts-k8s"
+        annotations:
+          summary: "Pod {{ $labels.pod }} is not ready"
+          description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} has been in {{ $labels.phase }} for 10 minutes"
+          runbook: "https://runbook.aiops-platform.internal/incidents/pod-not-ready"
+
+      - alert: KubernetesNodeNotReady
+        expr: kube_node_status_condition{condition="Ready",status="true"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          team: sre
+          channel: "#alerts-k8s"
+        annotations:
+          summary: "Node {{ $labels.node }} is not ready"
+          description: "Node {{ $labels.node }} has been NotReady for 5 minutes"
+          runbook: "https://runbook.aiops-platform.internal/incidents/node-not-ready"
+          dashboard: "https://grafana.aiops-platform.internal/d/kubernetes-nodes"
+
+      - alert: KubernetesNodeMemoryPressure
+        expr: kube_node_status_condition{condition="MemoryPressure",status="true"} == 1
+        for: 5m
+        labels:
+          severity: warning
+          team: sre
+          channel: "#alerts-k8s"
+        annotations:
+          summary: "Node {{ $labels.node }} is under memory pressure"
+          description: "Node {{ $labels.node }} has been under memory pressure for 5 minutes"
+
+      - alert: KubernetesNodeDiskPressure
+        expr: kube_node_status_condition{condition="DiskPressure",status="true"} == 1
+        for: 5m
+        labels:
+          severity: warning
+          team: sre
+          channel: "#alerts-k8s"
+        annotations:
+          summary: "Node {{ $labels.node }} is under disk pressure"
+          description: "Node {{ $labels.node }} has been under disk pressure for 5 minutes"
+
+      - alert: KubernetesJobFailed
+        expr: kube_job_status_failed > 0
+        for: 1m
+        labels:
+          severity: warning
+          team: sre
+          channel: "#alerts-k8s"
+        annotations:
+          summary: "Job {{ $labels.job_name }} failed"
+          description: "Job {{ $labels.job_name }} in namespace {{ $labels.namespace }} has failed"
+
+      - alert: KubernetesDeploymentReplicasMismatch
+        expr: |
+          kube_deployment_spec_replicas != kube_deployment_status_replicas_available
+        for: 10m
+        labels:
+          severity: critical
+          team: sre
+          channel: "#alerts-k8s"
+        annotations:
+          summary: "Deployment {{ $labels.deployment }} replica mismatch"
+          description: "Deployment {{ $labels.deployment }} in namespace {{ $labels.namespace }} has {{ $labels.replicas }} desired but {{ $labels.available }} available"
+
+      - alert: KubernetesDaemonSetRolloutStuck
+        expr: |
+          kube_daemonset_status_number_ready
+          < kube_daemonset_status_desired_number_scheduled
+        for: 15m
+        labels:
+          severity: warning
+          team: sre
+        annotations:
+          summary: "DaemonSet {{ $labels.daemonset }} rollout stuck"
+          description: "DaemonSet {{ $labels.daemonset }} has {{ $value }} ready pods out of desired"
+
+      - alert: KubernetesPersistentVolumeFilling
+        expr: |
+          (kubelet_volume_stats_available_bytes / kubelet_volume_stats_capacity_bytes) < 0.1
+        for: 5m
+        labels:
+          severity: warning
+          team: sre
+          channel: "#alerts-k8s"
+        annotations:
+          summary: "PV {{ $labels.persistentvolumeclaim }} is filling up"
+          description: "PV {{ $labels.persistentvolumeclaim }} in {{ $labels.namespace }} is {{ $value | humanizePercentage }} full"
+          runbook: "https://runbook.aiops-platform.internal/incidents/pv-filling"
+
+      - alert: KubernetesPersistentVolumeFull
+        expr: |
+          (kubelet_volume_stats_available_bytes / kubelet_volume_stats_capacity_bytes) < 0.03
+        for: 2m
+        labels:
+          severity: critical
+          team: sre
+        annotations:
+          summary: "PV {{ $labels.persistentvolumeclaim }} is almost full"
+          description: "PV {{ $labels.persistentvolumeclaim }} in {{ $labels.namespace }} is {{ $value | humanizePercentage }} full"
+
+      - alert: KubernetesOOMKilled
+        expr: |
+          increase(kube_pod_container_status_last_terminated_reason{reason="OOMKilled"}[15m]) > 1
+        for: 2m
+        labels:
+          severity: warning
+          team: sre
+        annotations:
+          summary: "Container OOM killed in {{ $labels.pod }}"
+          description: "Container {{ $labels.container }} in pod {{ $labels.pod }} was OOM killed"
+
+  - name: service_alerts
+    interval: 30s
+    rules:
+      - alert: HighErrorRate
+        expr: |
+          rate(http_requests_total{status=~"5.."}[5m])
+          /
+          rate(http_requests_total[5m]) > 0.01
+        for: 5m
+        labels:
+          severity: critical
+          team: sre
+          channel: "#alerts-svc"
+        annotations:
+          summary: "High error rate for {{ $labels.service }}"
+          description: "Service {{ $labels.service }} error rate is {{ $value | humanizePercentage }} (threshold 1%)"
+          runbook: "https://runbook.aiops-platform.internal/incidents/high-error-rate"
+          dashboard: "https://grafana.aiops-platform.internal/d/microservice-overview"
+
+      - alert: HighErrorRateWarning
+        expr: |
+          rate(http_requests_total{status=~"5.."}[5m])
+          /
+          rate(http_requests_total[5m]) > 0.005
+        for: 10m
+        labels:
+          severity: warning
+          team: sre
+        annotations:
+          summary: "Elevated error rate for {{ $labels.service }}"
+          description: "Service {{ $labels.service }} error rate is {{ $value | humanizePercentage }} (warning threshold 0.5%)"
+
+      - alert: HighLatencyP99
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(http_request_duration_seconds_bucket[5m])) by (le, service)
+          ) > 0.5
+        for: 5m
+        labels:
+          severity: critical
+          team: sre
+          channel: "#alerts-svc"
+        annotations:
+          summary: "P99 latency exceeded for {{ $labels.service }}"
+          description: "P99 latency for {{ $labels.service }} is {{ $value }}s (threshold 0.5s)"
+          runbook: "https://runbook.aiops-platform.internal/incidents/high-latency"
+
+      - alert: HighLatencyP95
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(http_request_duration_seconds_bucket[5m])) by (le, service)
+          ) > 0.2
+        for: 10m
+        labels:
+          severity: warning
+          team: sre
+        annotations:
+          summary: "P95 latency exceeded for {{ $labels.service }}"
+          description: "P95 latency for {{ $labels.service }} is {{ $value }}s (threshold 0.2s)"
+
+      - alert: ServiceDown
+        expr: |
+          absent(up{job=~".*service"})
+        for: 1m
+        labels:
+          severity: critical
+          team: sre
+          channel: "#alerts-svc"
+        annotations:
+          summary: "Service {{ $labels.job }} is down"
+          description: "No metrics received from {{ $labels.job }} for 1 minute"
+          runbook: "https://runbook.aiops-platform.internal/incidents/service-down"
+
+      - alert: HighCPUUsage
+        expr: |
+          sum(rate(container_cpu_usage_seconds_total{container!=""}[5m])) by (namespace, pod)
+          > 0.8
+        for: 10m
+        labels:
+          severity: warning
+          team: sre
+          channel: "#alerts-svc"
+        annotations:
+          summary: "High CPU usage on {{ $labels.pod }}"
+          description: "CPU usage on {{ $labels.pod }} is {{ $value | humanizePercentage }}"
+
+      - alert: HighMemoryUsage
+        expr: |
+          (container_memory_working_set_bytes{container!=""} / container_spec_memory_limit_bytes{container!=""})
+          > 0.85
+        for: 10m
+        labels:
+          severity: warning
+          team: sre
+        annotations:
+          summary: "High memory usage on {{ $labels.pod }}"
+          description: "Memory usage on {{ $labels.pod }} is {{ $value | humanizePercentage }}"
+
+      - alert: SLOErrorBudgetBurn
+        expr: |
+          (1 - (sum(rate(http_requests_total{status=~"5.."}[1h])) / sum(rate(http_requests_total[1h])))) < 0.99
+        for: 15m
+        labels:
+          severity: critical
+          team: sre
+          channel: "#alerts-svc"
+        annotations:
+          summary: "Error budget burn rate critical for SLO"
+          description: "Error budget is being consumed at {{ $value | humanizePercentage }} rate per hour"
+          runbook: "https://runbook.aiops-platform.internal/incidents/error-budget-burn"
+
+      - alert: SLOErrorBudgetExhausted
+        expr: slo:error_budget_remaining <= 0
+        for: 5m
+        labels:
+          severity: critical
+          team: sre
+        annotations:
+          summary: "Error budget exhausted"
+          description: "The 30-day error budget has been exhausted. All hands on deck."
+
+  - name: traffic_alerts
+    interval: 1m
+    rules:
+      - alert: TrafficSpike
+        expr: |
+          (rate(http_requests_total[5m]) / rate(http_requests_total[30m])) > 3
+        for: 5m
+        labels:
+          severity: warning
+          team: sre
+        annotations:
+          summary: "Traffic spike detected for {{ $labels.service }}"
+          description: "Request rate for {{ $labels.service }} increased {{ $value }}x in 5 minutes"
+
+      - alert: TrafficDrop
+        expr: |
+          (rate(http_requests_total[5m]) / rate(http_requests_total[30m])) < 0.3
+        for: 10m
+        labels:
+          severity: warning
+          team: sre
+        annotations:
+          summary: "Traffic drop detected for {{ $labels.service }}"
+          description: "Request rate for {{ $labels.service }} dropped to {{ $value }}x normal"
+
+  - name: security_alerts
+    interval: 1m
+    rules:
+      - alert: FalcoHighPriorityAlert
+        expr: |
+          rate(falco_events_total{priority=~"Critical|Warning"}[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+          team: security
+          channel: "#alerts-sec"
+        annotations:
+          summary: "Falco detected security event: {{ $labels.rule }}"
+          description: "Falco rule {{ $labels.rule }} triggered in {{ $labels.kubernetes_namespace }}: {{ $labels.output | truncate 200 }}"
+          runbook: "https://runbook.aiops-platform.internal/incidents/security-event"
+          dashboard: "https://grafana.aiops-platform.internal/d/security-overview"
+
+      - alert: FalcoNoticeAlert
+        expr: |
+          rate(falco_events_total{priority=~"Notice"}[5m]) > 0
+        for: 5m
+        labels:
+          severity: info
+          team: security
+        annotations:
+          summary: "Falco notice: {{ $labels.rule }}"
+          description: "Falco rule {{ $labels.rule }} triggered in {{ $labels.kubernetes_namespace }}"
+
+      - alert: KyvernoPolicyViolation
+        expr: |
+          kyverno_policy_rule_info_metric{enforce!=""} == 0
+        for: 5m
+        labels:
+          severity: warning
+          team: security
+          channel: "#alerts-sec"
+        annotations:
+          summary: "Kyverno policy violation: {{ $labels.policy }}"
+          description: "Policy {{ $labels.policy }} violated in {{ $labels.namespace }} by resource {{ $labels.resource }}"
+          runbook: "https://runbook.aiops-platform.internal/incidents/kyverno-violation"
+
+      - alert: KyvernoGenerateWarning
+        expr: |
+          kyverno_policy_rule_info_metric{generate!=""} == 0
+        for: 10m
+        labels:
+          severity: info
+          team: security
+        annotations:
+          summary: "Kyverno generation issue: {{ $labels.policy }}"
+          description: "Policy {{ $labels.policy }} generation issue in {{ $labels.namespace }}"
+
+  - name: argocd_alerts
+    interval: 1m
+    rules:
+      - alert: ArgoCDSyncFailed
+        expr: argocd_app_info{sync_status!~"Synced|Unknown"} > 0
+        for: 10m
+        labels:
+          severity: critical
+          team: platform
+          channel: "#platform-ops"
+        annotations:
+          summary: "ArgoCD sync failed for {{ $labels.name }}"
+          description: "Application {{ $labels.name }} sync status: {{ $labels.sync_status }}"
+          runbook: "https://runbook.aiops-platform.internal/incidents/argocd-sync-failed"
+          dashboard: "https://grafana.aiops-platform.internal/d/gitops-pipeline"
+
+      - alert: ArgoCDOutOfSync
+        expr: argocd_app_info{sync_status="OutOfSync"} > 0
+        for: 30m
+        labels:
+          severity: warning
+          team: platform
+          channel: "#platform-ops"
+        annotations:
+          summary: "ArgoCD {{ $labels.name }} is OutOfSync"
+          description: "Application {{ $labels.name }} has been out of sync for 30 minutes"
+
+      - alert: ArgoCDHealthDegraded
+        expr: argocd_app_health_status{health_status="Degraded"} > 0
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "ArgoCD application {{ $labels.name }} degraded"
+          description: "Application {{ $labels.name }} health status: Degraded"
+
+      - alert: ArgoCDSyncWarning
+        expr: argocd_app_info{sync_status="Unknown"} > 0
+        for: 20m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "ArgoCD {{ $labels.name }} sync unknown"
+          description: "Application {{ $labels.name }} sync status unknown"
+
+  - name: certificate_alerts
+    interval: 1m
+    rules:
+      - alert: CertificateExpiringWarning
+        expr: |
+          certmanager_certificate_expiration_timestamp_seconds - time() < 604800
+        for: 1h
+        labels:
+          severity: warning
+          team: platform
+          channel: "#platform-ops"
+        annotations:
+          summary: "Certificate {{ $labels.name }} expiring soon"
+          description: "Certificate {{ $labels.name }} expires in {{ $value | humanizeDuration }}"
+          runbook: "https://runbook.aiops-platform.internal/incidents/cert-expiry"
+
+      - alert: CertificateExpiringCritical
+        expr: |
+          certmanager_certificate_expiration_timestamp_seconds - time() < 172800
+        for: 1h
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Certificate {{ $labels.name }} expiring critically"
+          description: "Certificate {{ $labels.name }} expires in {{ $value | humanizeDuration }}"
+
+      - alert: CertificateRenewalFailed
+        expr: |
+          certmanager_certificate_renewal_timestamp_seconds > certmanager_certificate_expiration_timestamp_seconds
+        for: 1h
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Certificate renewal failed for {{ $labels.name }}"
+          description: "Certificate {{ $labels.name }} renewal failed, expires in {{ $value | humanizeDuration }}"
+
+  - name: ingress_alerts
+    interval: 1m
+    rules:
+      - alert: IngressHigh5xxRate
+        expr: |
+          sum(rate(nginx_ingress_controller_requests{status=~"5.."}[5m]))
+          / sum(rate(nginx_ingress_controller_requests[5m]))
+          > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          team: sre
+        annotations:
+          summary: "Ingress high 5xx rate"
+          description: "Ingress 5xx rate is {{ $value | humanizePercentage }} (threshold 5%)"
+
+      - alert: IngressLowSuccessRate
+        expr: |
+          sum(rate(nginx_ingress_controller_requests{status=~"2.."}[5m]))
+          / sum(rate(nginx_ingress_controller_requests[5m]))
+          < 0.95
+        for: 10m
+        labels:
+          severity: warning
+          team: sre
+        annotations:
+          summary: "Ingress success rate dropped"
+          description: "Ingress 2xx rate is {{ $value | humanizePercentage }} (threshold 95%)"
+
+  - name: aiops_alerts
+    interval: 1m
+    rules:
+      - alert: AnomalyDetected
+        expr: aiops_anomaly_score > 0.8
+        for: 5m
+        labels:
+          severity: warning
+          team: sre
+          channel: "#alerts-svc"
+        annotations:
+          summary: "AIOps anomaly detected for {{ $labels.service }}"
+          description: "Anomaly score {{ $value }} for {{ $labels.service }} - AI analysis available at AIOps dashboard"
+          dashboard: "https://grafana.aiops-platform.internal/d/aiops-dashboard"
+
+      - alert: AnomalyCritical
+        expr: aiops_anomaly_score > 0.95
+        for: 2m
+        labels:
+          severity: critical
+          team: sre
+        annotations:
+          summary: "Critical AIOps anomaly detected for {{ $labels.service }}"
+          description: "Critical anomaly score {{ $value }} for {{ $labels.service }} - immediate investigation required"
+
+      - alert: PredictedCapacityExhaustion
+        expr: aiops_capacity_forecast > 0.9
+        for: 30m
+        labels:
+          severity: warning
+          team: sre
+          channel: "#alerts-k8s"
+        annotations:
+          summary: "Capacity exhaustion predicted for {{ $labels.resource }}"
+          description: "Resource {{ $labels.resource }} predicted to exhaust capacity within {{ $labels.predicted_days }} days"
+
+      - alert: PredictedCapacityCritical
+        expr: aiops_capacity_forecast > 0.95
+        for: 15m
+        labels:
+          severity: critical
+          team: sre
+        annotations:
+          summary: "Critical capacity exhaustion predicted for {{ $labels.resource }}"
+          description: "Resource {{ $labels.resource }} predicted to exhaust capacity within {{ $labels.predicted_days }} days"
+
+  - name: infrastructure_alerts
+    interval: 1m
+    rules:
+      - alert: PrometheusTargetMissing
+        expr: up == 0
+        for: 2m
+        labels:
+          severity: critical
+          team: sre
+        annotations:
+          summary: "Prometheus target {{ $labels.instance }} is down"
+          description: "Target {{ $labels.job }}/{{ $labels.instance }} has been down for 2 minutes"
+
+      - alert: PrometheusRuleEvaluationFailed
+        expr: prometheus_rule_evaluation_failures_total > 0
+        for: 5m
+        labels:
+          severity: warning
+          team: sre
+        annotations:
+          summary: "Prometheus rule evaluation failures"
+          description: "Prometheus has {{ $value }} rule evaluation failures"
+
+      - alert: PrometheusAlertmanagerDown
+        expr: alertmanager_cluster_members == 0
+        for: 2m
+        labels:
+          severity: critical
+          team: sre
+        annotations:
+          summary: "Alertmanager is down"
+          description: "No Alertmanager cluster members detected"
+
+      - alert: PrometheusTSDBExceeded
+        expr: prometheus_tsdb_storage_blocks_bytes > 0.9 * 10737418240
+        for: 15m
+        labels:
+          severity: warning
+          team: sre
+        annotations:
+          summary: "Prometheus TSDB storage 90% full"
+          description: "TSDB storage at {{ $value | humanize1024 }}"

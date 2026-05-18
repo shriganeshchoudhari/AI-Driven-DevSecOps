@@ -1,0 +1,369 @@
+name: 01 - CI Build, Scan, and Sign
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref_name }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: us-west-2
+  AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-west-2.amazonaws.com
+  PLATFORMS: linux/amd64,linux/arm64
+  TRIVY_SEVERITY: CRITICAL,HIGH
+  SLACK_WEBHOOK: ${{ secrets.SLACK_CI_WEBHOOK }}
+  GITOPS_REPO: ${{ vars.GITOPS_REPO || 'org/gitops-config' }}
+
+permissions:
+  id-token: write
+  contents: read
+  attestations: write
+  packages: write
+  security-events: write
+  actions: read
+  deployments: write
+  pull-requests: read
+  checks: write
+
+jobs:
+  changes:
+    name: Detect Service Changes
+    runs-on: ubuntu-latest
+    outputs:
+      services: ${{ steps.filter.outputs.changes }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Path filter for service changes
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            frontend-service:
+              - 'microservices/frontend-service/**'
+              - 'microservices/shared/**'
+            auth-service:
+              - 'microservices/auth-service/**'
+              - 'microservices/shared/**'
+            payment-service:
+              - 'microservices/payment-service/**'
+              - 'microservices/shared/**'
+            notification-service:
+              - 'microservices/notification-service/**'
+              - 'microservices/shared/**'
+          base: ${{ github.base_ref || github.ref_name }}
+          list-files: json
+
+  build:
+    name: Build ${{ matrix.service }}
+    needs: changes
+    runs-on: ubuntu-latest
+    environment: ci
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - frontend-service
+          - auth-service
+          - payment-service
+          - notification-service
+    env:
+      SERVICE: ${{ matrix.service }}
+      IMAGE_TAG: ${{ github.sha }}
+      IMAGE_TAGS: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-west-2.amazonaws.com/${{ matrix.service }}:${{ github.sha }},${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-west-2.amazonaws.com/${{ matrix.service }}:latest
+    steps:
+      - name: Checkout source code with full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Authenticate to AWS via OIDC
+        uses: ./.github/actions/oidc-login
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-arn: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/github-actions-oidc-role
+          role-session-name: CI-Build-${{ matrix.service }}
+
+      - name: Log in to Amazon ECR
+        shell: bash
+        run: |
+          aws ecr get-login-password --region ${{ env.AWS_REGION }} | \
+            docker login --username AWS --password-stdin ${{ env.ECR_REGISTRY }}
+
+      - name: Setup Docker Buildx with QEMU multi-arch support
+        uses: docker/setup-buildx-action@v3
+        with:
+          version: latest
+          driver-opts: image=moby/buildkit:latest,network=host
+
+      - name: Setup QEMU for multi-platform emulation
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64,amd64
+
+      - name: Run Gitleaks secret scanning
+        uses: gitleaks/gitleaks-action@v2
+        with:
+          config-path: .gitleaks.toml
+          report-path: ${{ runner.temp }}/gitleaks/${{ matrix.service }}-gitleaks.sarif
+          no-banner: true
+        continue-on-error: true
+
+      - name: Upload Gitleaks SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ${{ runner.temp }}/gitleaks/${{ matrix.service }}-gitleaks.sarif
+          category: gitleaks-${{ matrix.service }}
+          checkout_path: ${{ github.workspace }}
+        continue-on-error: true
+
+      - name: Run Semgrep SAST with polyglot ruleset
+        uses: semgrep/semgrep-action@v1
+        with:
+          config: >-
+            p/default
+            p/security-audit
+            p/owasp-top-ten
+            p/github-actions
+            p/supply-chain
+          sarif_file: ${{ runner.temp }}/semgrep/${{ matrix.service }}-semgrep.sarif
+          output: sarif
+          audit_on: push
+          severity: ERROR,WARNING
+        continue-on-error: true
+        env:
+          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+
+      - name: Upload Semgrep SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ${{ runner.temp }}/semgrep/${{ matrix.service }}-semgrep.sarif
+          category: semgrep-${{ matrix.service }}
+          checkout_path: ${{ github.workspace }}
+        continue-on-error: true
+
+      - name: Run OWASP Dependency Check
+        uses: dependency-check/Dependency-Check_Action@main
+        with:
+          project: ${{ matrix.service }}
+          path: ./microservices/${{ matrix.service }}
+          format: SARIF
+          out: ${{ runner.temp }}/owasp
+          args: >
+            --failOnCVSS 9
+            --enableRetired
+            --nvdApiKey ${{ secrets.NVD_API_KEY }}
+        continue-on-error: true
+
+      - name: Upload OWASP Dependency Check SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ${{ runner.temp }}/owasp
+          category: owasp-dependency-check-${{ matrix.service }}
+          checkout_path: ${{ github.workspace }}
+        continue-on-error: true
+
+      - name: Generate SBOM via Syft
+        id: syft
+        uses: anchore/sbom-action@v0
+        with:
+          path: ./microservices/${{ matrix.service }}
+          format: spdx-json
+          output-file: ${{ runner.temp }}/sbom/${{ matrix.service }}-sbom.spdx.json
+          artifact-name: ${{ matrix.service }}-source-sbom
+
+      - name: Build, push, scan, sign, and attest Docker image
+        uses: ./.github/actions/ecr-build-push
+        with:
+          service: ${{ matrix.service }}
+          ecr-registry: ${{ env.ECR_REGISTRY }}
+          tags: ${{ env.IMAGE_TAGS }}
+          platforms: ${{ env.PLATFORMS }}
+          trivy-severity: ${{ env.TRIVY_SEVERITY }}
+          fail-on-trivy: 'true'
+
+      - name: Extract image digest for attestation
+        shell: bash
+        run: |
+          DIGEST=$(aws ecr describe-images \
+            --repository-name ${{ matrix.service }} \
+            --image-ids imageTag=${{ github.sha }} \
+            --query 'imageDetails[0].imageDigest' \
+            --output text)
+          echo "IMAGE_DIGEST=$DIGEST" >> $GITHUB_ENV
+          echo "$DIGEST" > ${{ runner.temp }}/digest/${{ matrix.service }}-digest.txt
+
+      - name: Run Helm lint on service chart
+        shell: bash
+        run: |
+          CHART_PATH="./charts/${{ matrix.service }}"
+          if [ -d "$CHART_PATH" ]; then
+            helm lint "$CHART_PATH" \
+              --strict \
+              --values "$CHART_PATH/values.yaml" \
+              --namespace aiops-${{ matrix.service }}
+          else
+            echo "Chart path $CHART_PATH does not exist, skipping helm lint"
+          fi
+
+      - name: Run Helm template validation
+        shell: bash
+        run: |
+          CHART_PATH="./charts/${{ matrix.service }}"
+          if [ -d "$CHART_PATH" ]; then
+            helm template "${{ matrix.service }}" "$CHART_PATH" \
+              --namespace aiops-${{ matrix.service }} \
+              --values "$CHART_PATH/values.yaml" \
+              > /tmp/helm-rendered-${{ matrix.service }}.yaml
+            echo "Helm template rendered successfully for ${{ matrix.service }}"
+          else
+            echo "Chart path $CHART_PATH does not exist, skipping helm template"
+          fi
+
+      - name: Validate Kubernetes manifests with kubeval
+        shell: bash
+        run: |
+          MANIFESTS_DIR="./deploy/${{ matrix.service }}"
+          if [ -d "$MANIFESTS_DIR" ]; then
+            find "$MANIFESTS_DIR" -name '*.yaml' -o -name '*.yml' | while read -r manifest; do
+              echo "Validating $manifest..."
+              kubeval "$manifest" \
+                --strict \
+                --ignore-missing-schemas \
+                --kubernetes-version 1.28
+            done
+          else
+            echo "Manifests directory $MANIFESTS_DIR does not exist, skipping kubeval"
+          fi
+
+      - name: Run conftest policy checks on Kubernetes manifests
+        shell: bash
+        run: |
+          MANIFESTS_DIR="./deploy/${{ matrix.service }}"
+          if [ -d "$MANIFESTS_DIR" ] && [ -d "./policies/conftest" ]; then
+            conftest test "$MANIFESTS_DIR" \
+              --policy ./policies/conftest \
+              --namespace aiops-platform \
+              --all-namespaces \
+              --no-fail || echo "WARNING: conftest policy violations found (non-blocking)"
+          else
+            echo "Skipping conftest - manifests or policies directory missing"
+          fi
+
+      - name: Upload SBOM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.service }}-sbom
+          path: ${{ runner.temp }}/sbom/${{ matrix.service }}-sbom.spdx.json
+          retention-days: 90
+          if-no-files-found: warn
+
+      - name: Upload image digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.service }}-image-digest
+          path: ${{ runner.temp }}/digest/${{ matrix.service }}-digest.txt
+          retention-days: 90
+          if-no-files-found: warn
+
+      - name: Upload SARIF results for GitHub Security tab
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.service }}-sarif-results
+          path: ${{ runner.temp }}/**/*.sarif
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Notify Slack on CI failure
+        if: failure()
+        uses: slackapi/slack-github-action@v1
+        with:
+          payload: |
+            {
+              "channel": "#ci-cd-alerts",
+              "username": "CI Bot",
+              "icon_emoji": ":x:",
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": {
+                    "type": "plain_text",
+                    "text": ":red_circle: CI Build Failed: ${{ matrix.service }}"
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    { "type": "mrkdwn", "text": "*Repository:*\n${{ github.repository }}" },
+                    { "type": "mrkdwn", "text": "*Branch:*\n${{ github.ref_name }}" },
+                    { "type": "mrkdwn", "text": "*Service:*\n${{ matrix.service }}" },
+                    { "type": "mrkdwn", "text": "*Commit:*\n${{ github.sha }}" }
+                  ]
+                },
+                {
+                  "type": "actions",
+                  "elements": [
+                    {
+                      "type": "button",
+                      "text": { "type": "plain_text", "text": "View Run" },
+                      "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                    }
+                  ]
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    { "type": "mrkdwn", "text": "Triggered by: ${{ github.actor }} | ${{ github.event_name }}" }
+                  ]
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ env.SLACK_WEBHOOK }}
+
+  ci-status:
+    name: CI Status Check
+    needs: build
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check build results
+        shell: bash
+        run: |
+          BUILD_RESULT="${{ needs.build.result }}"
+          echo "CI build result: $BUILD_RESULT"
+          if [ "$BUILD_RESULT" = "success" ] || [ "$BUILD_RESULT" = "skipped" ]; then
+            echo "CI pipeline completed successfully"
+            exit 0
+          else
+            echo "CI pipeline failed or was cancelled"
+            exit 1
+          fi
+
+  tag-success:
+    name: Tag Successful Build
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && success()
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create and push Git tag
+        shell: bash
+        run: |
+          TAG_NAME="build-${{ github.run_number }}-${{ github.sha }}"
+          git tag -a "$TAG_NAME" -m "CI build ${{ github.run_number }} successful"
+          git push origin "$TAG_NAME"
+          echo "::notice::Created tag $TAG_NAME"

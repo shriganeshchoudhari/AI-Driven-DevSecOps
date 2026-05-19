@@ -153,7 +153,7 @@ module "rds" {
   kms_key_arn         = module.kms.rds_kms_key_arn
   multi_az            = false
   backup_retention_days = 1
-  deletion_protection = true
+  deletion_protection = false
   performance_insights_enabled = true
   monitoring_interval = 10
 
@@ -209,13 +209,13 @@ resource "random_password" "rds_master" {
 }
 
 resource "aws_secretsmanager_secret" "rds_master_password" {
-  name                    = "${var.cluster_name}-rds-master-password"
+  name                    = "${var.cluster_name}-rds-master-password-v2"
   description             = "Master password for RDS instance ${var.rds_database_name}"
   kms_key_id              = module.kms.secrets_kms_key_arn
-  recovery_window_in_days = 7
+  recovery_window_in_days = 0
 
   tags = merge(var.tags, {
-    Name = "${var.cluster_name}-rds-master-password"
+    Name = "${var.cluster_name}-rds-master-password-v2"
   })
 }
 
@@ -225,12 +225,12 @@ resource "aws_secretsmanager_secret_version" "rds_master_password" {
 }
 
 resource "aws_secretsmanager_secret" "elasticache_auth_token" {
-  name                    = "${var.cluster_name}-elasticache-auth-token"
+  name                    = "${var.cluster_name}-elasticache-auth-token-v2"
   description             = "Auth token for ElastiCache Redis"
   kms_key_id              = module.kms.secrets_kms_key_arn
-  recovery_window_in_days = 7
+  recovery_window_in_days = 0
 
   tags = merge(var.tags, {
-    Name = "${var.cluster_name}-elasticache-auth-token"
+    Name = "${var.cluster_name}-elasticache-auth-token-v2"
   })
 }

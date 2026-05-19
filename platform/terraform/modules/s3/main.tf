@@ -10,7 +10,7 @@ locals {
 # ---------------------------------------------------------------------------
 resource "aws_s3_bucket" "terraform_state" {
   bucket        = "${var.project_name}-terraform-state-${var.aws_account_id}"
-  force_destroy = false
+  force_destroy = true
 
   tags = merge(var.tags, {
     Name        = "${var.project_name}-terraform-state"
@@ -88,7 +88,7 @@ resource "aws_s3_bucket_policy" "terraform_state" {
 # ---------------------------------------------------------------------------
 resource "aws_s3_bucket" "backup" {
   bucket        = var.backup_bucket_name
-  force_destroy = false
+  force_destroy = true
   object_lock_enabled = true
 
   tags = merge(var.tags, {
@@ -190,7 +190,7 @@ resource "aws_s3_bucket" "flow_logs" {
   count = var.flow_logs_bucket_enabled ? 1 : 0
 
   bucket        = "${var.project_name}-${var.environment}-vpc-flow-logs"
-  force_destroy = false
+  force_destroy = true
 
   tags = merge(var.tags, {
     Name        = "${var.project_name}-${var.environment}-vpc-flow-logs"
@@ -252,7 +252,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "flow_logs" {
 # ---------------------------------------------------------------------------
 resource "aws_s3_bucket" "container_cache" {
   bucket        = "${var.project_name}-${var.environment}-container-cache"
-  force_destroy = false
+  force_destroy = true
 
   tags = merge(var.tags, {
     Name        = "${var.project_name}-${var.environment}-container-cache"
@@ -306,7 +306,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "container_cache" {
 # ---------------------------------------------------------------------------
 resource "aws_s3_bucket" "log_archive" {
   bucket        = var.enable_logging ? local.log_bucket : "${var.project_name}-${var.environment}-log-archive"
-  force_destroy = false
+  force_destroy = true
 
   tags = merge(var.tags, {
     Name        = "${var.project_name}-${var.environment}-log-archive"

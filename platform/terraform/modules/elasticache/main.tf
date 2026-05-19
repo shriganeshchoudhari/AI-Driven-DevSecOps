@@ -176,13 +176,13 @@ resource "aws_elasticache_replication_group" "main" {
 # Store Auth Token in Secrets Manager
 # ---------------------------------------------------------------------------
 resource "aws_secretsmanager_secret" "elasticache_auth" {
-  name                    = "${var.project_name}-${var.environment}-redis-auth"
+  name                    = "${var.project_name}-${var.environment}-redis-auth-v2"
   description             = "ElastiCache Redis auth token for ${var.project_name}-${var.environment}"
   kms_key_id              = var.kms_key_arn
-  recovery_window_in_days = 7
+  recovery_window_in_days = 0
 
   tags = merge(var.tags, {
-    Name        = "${var.project_name}-${var.environment}-redis-auth"
+    Name        = "${var.project_name}-${var.environment}-redis-auth-v2"
     Environment = var.environment
   })
 }

@@ -14,11 +14,11 @@ cluster_version            = "1.30"
 cluster_endpoint_public_access  = true
 cluster_endpoint_private_access = true
 
-node_group_instance_types = ["t3.micro"]
-node_group_desired_size   = 6
-node_group_min_size       = 1
-node_group_max_size       = 8
-node_group_disk_size      = 20
+node_group_instance_types = ["m6i.large", "m6a.large"]
+node_group_desired_size   = 3
+node_group_min_size       = 2
+node_group_max_size       = 6
+node_group_disk_size      = 50
 
 enable_karpenter                 = false
 karpenter_instance_families      = ["m6i", "m6a", "c6i", "c6a", "r6i", "r6a"]
